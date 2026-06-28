@@ -1,0 +1,41 @@
+{
+  "config": {
+    "dbConnection": "",
+    "dbTable": "alarm_events",
+    "journalLimit": 1000
+  },
+  "alarms": [
+    {
+      "enabled": true,
+      "priority": "high",
+      "type": "limit",
+      "name": "testalarm",
+      "deviceId": "test2",
+      "tagId": "M1",
+      "onDelaySec": 0,
+      "offDelaySec": 0,
+      "message": "ทดลองงง",
+      "group": "test1",
+      "subType": "hihi",
+      "setpoint": 1,
+      "deadband": 0,
+      "id": "alm_1780579578179_950"
+    },
+    {
+      "enabled": true,
+      "priority": "critical",
+      "type": "limit",
+      "name": "test2",
+      "deviceId": "test2",
+      "tagId": "M2",
+      "onDelaySec": 0,
+      "offDelaySec": 0,
+      "message": "test ti 2",
+      "group": "test2",
+      "subType": "hi",
+      "setpoint": 1,
+      "deadband": 0,
+      "id": "alm_1780580147303_127"
+    }
+  ]
+}

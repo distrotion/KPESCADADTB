@@ -1,0 +1,26 @@
+# KPE SCADA — git attributes
+# กัน line-ending พังเวลา push/pull ข้าม OS (โดยเฉพาะ .sh ที่ต้องเป็น LF ไม่งั้นรันบน Pi/Linux พัง)
+
+* text=auto
+
+# Shell / launcher (Pi/Mac/Linux) — ต้อง LF เสมอ
+*.sh        text eol=lf
+*.command   text eol=lf
+
+# Windows scripts — CRLF
+*.bat       text eol=crlf
+*.ps1       text eol=crlf
+
+# Binary (อย่าแตะ line-ending / อย่า diff)
+*.exe       binary
+*.ttf       binary
+*.otf       binary
+*.wasm      binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.tar.gz    binary
+*.zip       binary
+*.deb       binary

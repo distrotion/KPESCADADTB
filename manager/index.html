@@ -1,0 +1,1404 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KPE SCADA Manager</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0e1a;--card:#111827;--border:#1f2937;--muted:#374151;
+  --text:#e5e7eb;--dim:#6b7280;--blue:#60a5fa;--green:#22c55e;
+  --red:#ef4444;--amber:#f59e0b;--purple:#7c3aed;
+}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh}
+
+/* ── Header ─────────────────────────────────────────────────────── */
+header{background:#0d1117;border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;gap:16px}
+.logo{display:flex;align-items:center;gap:10px}
+.logo-icon{width:30px;height:30px;background:#2563eb;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:16px}
+.logo-text{color:var(--blue);font-weight:800;font-size:16px}
+.mgr-version{color:var(--dim);font-size:11px;font-weight:600;padding:2px 8px;border:1px solid var(--border);border-radius:20px;white-space:nowrap}
+#clock{margin-left:auto;color:var(--dim);font-size:12px}
+
+/* ── Layout ─────────────────────────────────────────────────────── */
+.container{max-width:960px;margin:28px auto;padding:0 20px;display:flex;flex-direction:column;gap:20px}
+
+/* ── Service card ───────────────────────────────────────────────── */
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;transition:border-color .3s}
+.card.online{border-color:#166534}
+.card-top-bar{height:3px;background:var(--muted);transition:background .3s}
+.card.online .card-top-bar{background:var(--green)}
+
+.card-head{padding:14px 18px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border)}
+.proc-dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex-shrink:0;transition:all .3s}
+.proc-dot.on{background:var(--green);box-shadow:0 0 8px #22c55e88}
+.proc-dot.off{background:var(--red)}
+.card-title{font-weight:700;font-size:15px;flex:1}
+.badge{font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px}
+.badge-on{background:#166534;color:#4ade80}
+.badge-off{background:#450a0a;color:#f87171}
+
+/* ── Port status row ─────────────────────────────────────────────── */
+.port-row{padding:10px 18px;display:flex;align-items:center;gap:16px;background:#0d1424;border-bottom:1px solid var(--border)}
+.port-pill{display:flex;align-items:center;gap:7px;padding:4px 12px;border-radius:20px;border:1px solid var(--border);background:var(--card);font-size:12px;font-weight:600}
+.port-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);transition:all .3s}
+.port-dot.open{background:var(--green);box-shadow:0 0 6px #22c55e99}
+.port-dot.closed{background:var(--red)}
+.port-pids{font-size:11px;color:var(--dim)}
+.btn-kill{margin-left:auto;padding:4px 14px;background:#7f1d1d;color:#fca5a5;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;transition:background .15s}
+.btn-kill:hover{background:#991b1b}
+.btn-kill:disabled{opacity:.3;cursor:default}
+.kill-label{font-size:11px;color:var(--dim);font-style:italic}
+
+/* ── Actions ─────────────────────────────────────────────────────── */
+.card-actions{padding:12px 18px;display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--border)}
+button{display:inline-flex;align-items:center;gap:6px;padding:7px 16px;border:none;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer;transition:opacity .15s}
+button:disabled{opacity:.35;cursor:default}
+.btn-start{background:#166534;color:#4ade80}
+.btn-stop{background:#7f1d1d;color:#fca5a5}
+.btn-open{background:var(--border);color:var(--text)}
+.btn-open:hover:not(:disabled){background:var(--muted)}
+
+/* ── Log ─────────────────────────────────────────────────────────── */
+.log-bar{padding:7px 18px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;border-top:1px solid var(--border)}
+.log-bar span{font-size:10px;color:var(--dim);font-weight:700;letter-spacing:.5px}
+.log-toggle{font-size:11px;color:var(--dim)}
+.log-box{background:#060b14;font-family:monospace;font-size:11.5px;color:#4ade80;padding:10px 16px;height:160px;overflow-y:auto;display:none;line-height:1.6}
+.log-box.open{display:block}
+.log-line{white-space:pre-wrap;word-break:break-all}
+.log-err{color:#f87171}
+
+/* ── Port monitor table ──────────────────────────────────────────── */
+.ports-card{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.ports-head{padding:12px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+.ports-head h3{font-size:13px;font-weight:700;color:var(--text)}
+.ports-head .sub{font-size:11px;color:var(--dim)}
+.ports-table{width:100%;border-collapse:collapse;font-size:12px}
+.ports-table th{background:#0d1424;color:var(--dim);font-size:10px;font-weight:700;letter-spacing:.5px;padding:7px 16px;text-align:left}
+.ports-table td{padding:9px 16px;border-top:1px solid var(--border);vertical-align:middle}
+.port-status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;transition:all .3s}
+.port-status-dot.open{background:var(--green);box-shadow:0 0 6px #22c55e88}
+.port-status-dot.closed{background:var(--muted)}
+.pid-chip{display:inline-block;background:var(--border);border-radius:4px;padding:1px 7px;font-size:10px;font-family:monospace;margin:0 2px;color:#e5e7eb}
+.kill-btn-sm{padding:3px 12px;background:#7f1d1d;color:#fca5a5;border:none;border-radius:5px;font-size:11px;font-weight:700;cursor:pointer}
+.kill-btn-sm:hover{background:#991b1b}
+.kill-btn-sm:disabled{opacity:.3;cursor:default}
+
+/* ── Quick links ─────────────────────────────────────────────────── */
+.links{display:flex;gap:12px;flex-wrap:wrap}
+.link-card{flex:1;min-width:150px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;text-decoration:none;color:var(--text);transition:border-color .2s;display:flex;flex-direction:column;gap:5px}
+.link-card:hover{border-color:var(--blue)}
+.link-card .lc-label{font-size:10px;color:var(--dim);font-weight:700;letter-spacing:.5px}
+.link-card .lc-url{font-size:13px;color:var(--blue)}
+.link-card .lc-desc{font-size:11px;color:var(--dim)}
+
+/* ── Pulse animation ─────────────────────────────────────────────── */
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.pulsing{animation:pulse 1.5s infinite}
+</style>
+</head>
+<body>
+
+<!-- LOGIN-GATE: หน้า login เข้า Manager (UI-level, แยกจาก §21) — โผล่เมื่อเปิดล็อก -->
+<div id="gate-overlay" style="display:none;position:fixed;inset:0;z-index:9999;background:#0a0e1a;align-items:center;justify-content:center">
+  <div style="width:340px;max-width:90vw;padding:28px;background:#0d1424;border:1px solid #1b2436;border-radius:14px">
+    <div style="display:flex;align-items:center;gap:8px;font-size:16px;font-weight:800;color:var(--blue);margin-bottom:16px">🔒 เข้าสู่ระบบ Manager</div>
+    <input id="gate-pw" type="password" placeholder="รหัสผ่าน" onkeydown="if(event.key==='Enter')verifyGate()"
+      style="width:100%;box-sizing:border-box;padding:11px 12px;background:#111827;border:1px solid #374151;border-radius:8px;color:#fff;font-size:14px">
+    <div id="gate-err" style="color:#f87171;font-size:12px;margin-top:8px;min-height:14px"></div>
+    <button onclick="verifyGate()" style="width:100%;margin-top:10px;padding:12px;background:#2563eb;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer">เข้าสู่ระบบ</button>
+    <div style="color:#64748b;font-size:11px;text-align:center;margin-top:10px">ล็อกการเข้าใช้งาน Manager (แยกจากสิทธิ์ผู้ใช้)</div>
+  </div>
+</div>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon" id="mgr-logo-icon">⚡</div>
+    <span class="logo-text" id="mgr-logo-text">KPE SCADA Manager</span>
+    <span class="mgr-version" id="mgr-version" title="เวอร์ชันแอป (stamp อัตโนมัติทุก commit)"></span>
+    <button id="brand-edit-btn" onclick="toggleBrandEdit()" title="แก้ชื่อ/โลโก้ Manager"
+      style="margin-left:8px;background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px">✏️</button>
+  </div>
+  <div style="display:flex;align-items:center;gap:14px">
+    <button id="gate-logout-btn" onclick="logoutGate()" title="ออกจากระบบ Manager"
+      style="display:none;background:none;border:1px solid var(--border);border-radius:6px;color:#f87171;cursor:pointer;padding:5px 12px;font-size:12px">⎋ Logout</button>
+    <span id="clock"></span>
+  </div>
+</header>
+
+<!-- ตัวแก้ branding ของ Manager (อิสระจาก frontend) -->
+<div id="brand-edit" style="display:none;margin:0 24px 14px;padding:14px;background:var(--card);border:1px solid var(--border);border-radius:10px">
+  <div style="font-weight:700;margin-bottom:10px;font-size:13px">✏️ ชื่อ + โลโก้ (เฉพาะหน้า Manager นี้)</div>
+  <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)">
+      ชื่อ
+      <input id="brand-name" type="text" placeholder="KPE SCADA Manager"
+        style="width:240px;padding:8px 10px;background:#111827;border:1px solid var(--border);border-radius:6px;color:#fff;font-size:13px">
+    </label>
+    <div style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)">
+      โลโก้ (≤2MB · ว่าง=ไอคอนเดิม)
+      <span style="display:flex;gap:8px;align-items:center">
+        <span id="brand-preview" style="width:32px;height:32px;border:1px solid var(--border);border-radius:6px;background:#111827;display:flex;align-items:center;justify-content:center;font-size:14px;overflow:hidden">🖼️</span>
+        <input id="brand-file" type="file" accept="image/*" onchange="onBrandFile(event)" style="font-size:11px;color:var(--dim);max-width:180px">
+        <button onclick="clearBrandLogo()" style="background:none;border:1px solid var(--border);border-radius:6px;color:#f87171;cursor:pointer;padding:4px 8px;font-size:11px">ลบโลโก้</button>
+      </span>
+    </div>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)">
+      จัดรูป (fit)
+      <select id="brand-fit" onchange="onBrandFit(event)"
+        style="padding:8px 10px;background:#111827;border:1px solid var(--border);border-radius:6px;color:#fff;font-size:13px">
+        <option value="contain">Contain (เห็นทั้งรูป)</option>
+        <option value="cover">Cover (เต็มกรอบ)</option>
+        <option value="fill">Fill (ยืดเต็ม)</option>
+        <option value="scaleDown">Scale-down</option>
+      </select>
+    </label>
+    <button class="btn-open" onclick="saveBranding()" style="padding:9px 16px;background:#2563eb;color:#fff;border:none">💾 บันทึก</button>
+  </div>
+  <div id="brand-msg" style="font-size:11.5px;color:var(--dim);margin-top:8px"></div>
+</div>
+
+<!-- License (Pi-only activation · ดู docs/LICENSING.md) — โชว์เมื่อ license invalid (service ถูกบล็อก) -->
+<div id="license-panel" style="display:none;margin:0 24px 14px;padding:16px;background:#2a1215;border:1px solid #7f1d1d;border-radius:10px">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+    <span style="font-size:18px">🔒</span>
+    <span style="color:#fca5a5;font-weight:800;font-size:15px">License ไม่ถูกต้อง — service ถูกหยุด</span>
+    <span id="lic-reason" style="color:var(--dim);font-size:12px"></span>
+  </div>
+  <div style="font-size:12.5px;color:var(--dim);margin-bottom:8px">
+    Machine-ID: <strong id="lic-mid" style="color:#e5e7eb;font-family:monospace"></strong>
+    <button id="lic-copy" onclick="copyMid()" title="คัดลอก fingerprint ส่งให้ผู้ขายออก license" style="margin-left:8px;background:#374151;color:#e5e7eb;border:0;border-radius:5px;padding:3px 9px;font-size:11px;cursor:pointer">คัดลอก ID</button>
+    <span style="margin-left:10px">fingerprint: <code id="lic-fp" style="color:#9ca3af;font-size:11px"></code></span>
+  </div>
+  <div style="font-size:12px;color:var(--dim);margin-bottom:8px">ติดตั้ง license จาก USB: เลือกไฟล์ <code>license.key</code> หรือวาง base64 แล้วกดติดตั้ง</div>
+  <textarea id="lic-input" placeholder="วาง base64 ของ license.key ที่นี่ …" style="width:100%;min-height:58px;box-sizing:border-box;background:#111827;color:#e5e7eb;border:1px solid var(--border);border-radius:6px;padding:8px;font-family:monospace;font-size:11px"></textarea>
+  <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+    <input id="lic-file" type="file" accept=".key,.txt,text/plain" onchange="onLicFile(event)" style="font-size:11px;color:var(--dim)">
+    <button onclick="installLicense()" style="background:#2563eb;color:#fff;border:0;border-radius:6px;padding:7px 14px;font-weight:700;cursor:pointer">ติดตั้ง license</button>
+    <span id="lic-msg" style="font-size:11.5px;color:var(--dim)"></span>
+  </div>
+</div>
+
+<!-- License OK — โชว์เมื่อมี license ใช้งานได้ (Pi) + ปุ่มถอด -->
+<div id="license-active" style="display:none;margin:0 24px 14px;padding:10px 14px;background:#0b2a18;border:1px solid #166534;border-radius:10px;align-items:center;gap:10px;flex-wrap:wrap">
+  <span style="font-size:15px">🔓</span>
+  <span style="color:#86efac;font-weight:700">License ใช้งานได้</span>
+  <span id="lic-active-info" style="color:var(--dim);font-size:12px;font-family:monospace"></span>
+  <button onclick="toggleAddDlc()" title="เพิ่ม DLC (add-on) แบบ stack — union กับ Base โดยไม่ทับ" style="margin-left:auto;background:#1e3a8a;color:#fff;border:0;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer">+ เพิ่ม DLC</button>
+  <button onclick="removeLicense()" title="ลบ license ออกจากเครื่องนี้ (ระบบจะถูกบล็อกจนกว่าจะ activate ใหม่)" style="background:#7f1d1d;color:#fff;border:0;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer">ถอด license</button>
+  <span id="lic-active-msg" style="font-size:11.5px;color:var(--dim)"></span>
+  <!-- panel เพิ่ม DLC (stack add-on) -->
+  <div id="dlc-add" style="display:none;flex-basis:100%;margin-top:8px;gap:8px;align-items:center;flex-wrap:wrap">
+    <textarea id="dlc-input" placeholder="วาง base64 ของใบ DLC (license.key add-on ที่เซ็นด้วย --scope feature --features ... สำหรับเครื่องนี้)" style="flex:1;min-width:280px;min-height:54px;background:#0a1120;color:#e5e7eb;border:1px solid #1f2937;border-radius:6px;padding:8px;font-family:monospace;font-size:11px"></textarea>
+    <input type="file" id="dlc-file" accept=".key,.txt" onchange="onDlcFile(event)" style="color:var(--dim);font-size:11px">
+    <button onclick="addDlc()" style="background:#2563eb;color:#fff;border:0;border-radius:6px;padding:7px 14px;font-weight:700;cursor:pointer">ติดตั้ง DLC</button>
+    <span id="dlc-msg" style="font-size:11.5px;color:var(--dim)"></span>
+  </div>
+</div>
+
+<!-- Popup แจ้งเตือน/ยืนยัน (reuse ได้ · ดู kpeConfirm) -->
+<div id="kpe-modal" style="display:none;position:fixed;inset:0;z-index:10000;background:rgba(5,8,16,.72);align-items:center;justify-content:center">
+  <div style="background:#0f1726;border:1px solid #334155;border-radius:14px;max-width:460px;width:90%;box-shadow:0 24px 64px rgba(0,0,0,.55);overflow:hidden">
+    <div id="kpe-modal-head" style="display:flex;align-items:center;gap:10px;padding:15px 18px;background:#2a1215;border-bottom:1px solid #7f1d1d">
+      <span id="kpe-modal-icon" style="font-size:22px">⚠️</span>
+      <span id="kpe-modal-title" style="color:#fca5a5;font-weight:800;font-size:15px">ยืนยัน</span>
+    </div>
+    <div id="kpe-modal-body" style="padding:16px 18px;color:#cbd5e1;font-size:13px;line-height:1.65;white-space:pre-line"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;padding:12px 18px;background:#0b1120;border-top:1px solid #1f2937">
+      <button id="kpe-modal-cancel" onclick="kpeModalClose(false)" style="background:#374151;color:#e5e7eb;border:0;border-radius:7px;padding:8px 16px;font-size:13px;cursor:pointer">ยกเลิก</button>
+      <button id="kpe-modal-ok" onclick="kpeModalClose(true)" style="background:#dc2626;color:#fff;border:0;border-radius:7px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer">ยืนยัน</button>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- Backend card -->
+  <div class="card" id="card-backend">
+    <div class="card-top-bar" id="bar-backend"></div>
+    <div class="card-head">
+      <span class="proc-dot" id="proc-dot-backend"></span>
+      <span class="card-title">Backend</span>
+      <span style="color:var(--dim);font-size:12px">Node.js</span>
+      <span class="badge badge-off" id="badge-backend">OFFLINE</span>
+    </div>
+    <!-- Port status -->
+    <div class="port-row" id="portrow-backend">
+      <div class="port-pill">
+        <span class="port-dot closed" id="pdot-backend"></span>
+        <span>Port <strong id="pnum-backend">4012</strong></span>
+      </div>
+      <span class="port-pids" id="ppids-backend">—</span>
+      <span class="kill-label" id="plabel-backend">not in use</span>
+      <button class="btn-kill" id="pkill-backend" onclick="killPort(4012,'backend')" disabled>⚡ Kill Port</button>
+    </div>
+    <div class="card-actions">
+      <button class="btn-start" id="btn-start-backend" onclick="startSvc('backend')">▶ Start</button>
+      <button class="btn-stop"  id="btn-stop-backend"  onclick="stopSvc('backend')" disabled>■ Stop</button>
+      <button class="btn-open" id="open-backend" onclick="window.open('http://localhost:4012/api/health','_blank')">↗ API Health</button>
+    </div>
+    <div class="log-bar" onclick="toggleLog('backend')">
+      <span>LOG OUTPUT</span><span class="log-toggle" id="lt-backend">▼ show</span>
+    </div>
+    <div class="log-box" id="log-backend"></div>
+  </div>
+
+  <!-- Frontend card -->
+  <div class="card" id="card-frontend">
+    <div class="card-top-bar" id="bar-frontend"></div>
+    <div class="card-head">
+      <span class="proc-dot" id="proc-dot-frontend"></span>
+      <span class="card-title">Frontend</span>
+      <span style="color:var(--dim);font-size:12px">Flutter Web</span>
+      <span class="badge badge-off" id="badge-frontend">OFFLINE</span>
+    </div>
+    <div class="port-row" id="portrow-frontend">
+      <div class="port-pill">
+        <span class="port-dot closed" id="pdot-frontend"></span>
+        <span>Port <strong id="pnum-frontend">3012</strong></span>
+      </div>
+      <span class="port-pids" id="ppids-frontend">—</span>
+      <span class="kill-label" id="plabel-frontend">not in use</span>
+      <button class="btn-kill" id="pkill-frontend" onclick="killPort(3012,'frontend')" disabled>⚡ Kill Port</button>
+    </div>
+    <div class="card-actions">
+      <button class="btn-start" id="btn-start-frontend" onclick="startSvc('frontend')">▶ Start</button>
+      <button class="btn-stop"  id="btn-stop-frontend"  onclick="stopSvc('frontend')" disabled>■ Stop</button>
+      <button class="btn-open" id="open-frontend" onclick="window.open('http://localhost:3012','_blank')">↗ Open Dashboard</button>
+    </div>
+    <div class="log-bar" onclick="toggleLog('frontend')">
+      <span>LOG OUTPUT</span><span class="log-toggle" id="lt-frontend">▼ show</span>
+    </div>
+    <div class="log-box" id="log-frontend"></div>
+  </div>
+
+  <!-- Deploy card (run-mode web) -->
+  <div class="card" id="card-deploy">
+    <div class="card-top-bar" id="bar-deploy"></div>
+    <div class="card-head">
+      <span class="proc-dot" id="proc-dot-deploy"></span>
+      <span class="card-title">Deploy</span>
+      <span style="color:var(--dim);font-size:12px">run-mode web</span>
+      <span class="badge badge-off" id="badge-deploy">OFFLINE</span>
+    </div>
+    <div class="port-row" id="portrow-deploy">
+      <div class="port-pill">
+        <span class="port-dot closed" id="pdot-deploy"></span>
+        <span>Port <strong id="pnum-deploy">9012</strong></span>
+      </div>
+      <span class="port-pids" id="ppids-deploy">—</span>
+      <span class="kill-label" id="plabel-deploy">not in use</span>
+      <button class="btn-kill" id="pkill-deploy" onclick="killPort(9012,'deploy')" disabled>⚡ Kill Port</button>
+    </div>
+    <div class="card-actions">
+      <button class="btn-start" id="btn-start-deploy" onclick="startSvc('deploy')">▶ Start</button>
+      <button class="btn-stop"  id="btn-stop-deploy"  onclick="stopSvc('deploy')" disabled>■ Stop</button>
+      <button class="btn-open" id="open-deploy" onclick="window.open('http://localhost:9012','_blank')">↗ Open Deploy</button>
+    </div>
+    <div class="log-bar" onclick="toggleLog('deploy')">
+      <span>LOG OUTPUT</span><span class="log-toggle" id="lt-deploy">▼ show</span>
+    </div>
+    <div class="log-box" id="log-deploy"></div>
+  </div>
+
+  <!-- Ports config -->
+  <div class="ports-card" id="ports-config-card">
+    <div class="ports-head">
+      <h3>⚙️ ตั้งค่าพอร์ต (Ports)</h3>
+      <span class="sub">เปลี่ยนแล้วกด Save → Restart (พอร์ตหลัก/Backend มีผลทันที · Manager ต้อง relaunch)</span>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;padding:6px 2px 2px">
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)">
+        พอร์ตหลัก (Frontend/UI)
+        <input id="pcfg-frontend" type="number" min="1" max="65535"
+          style="width:120px;padding:8px 10px;background:#111827;border:1px solid var(--border);border-radius:6px;color:#fff;font-size:13px">
+        <span id="tip-frontend" style="font-size:10px;color:var(--blue)"></span>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)">
+        Backend (ภายใน)
+        <input id="pcfg-backend" type="number" min="1" max="65535"
+          style="width:120px;padding:8px 10px;background:#111827;border:1px solid var(--border);border-radius:6px;color:#fff;font-size:13px">
+        <span id="tip-backend" style="font-size:10px;color:var(--dim)"></span>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)">
+        Manager
+        <input id="pcfg-manager" type="number" min="1" max="65535"
+          style="width:120px;padding:8px 10px;background:#111827;border:1px solid var(--border);border-radius:6px;color:#fff;font-size:13px">
+        <span id="tip-manager" style="font-size:10px;color:var(--blue)"></span>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--green)">
+        Deploy (run-mode)
+        <input id="pcfg-deploy" type="number" min="1" max="65535"
+          style="width:120px;padding:8px 10px;background:#111827;border:1px solid var(--border);border-radius:6px;color:#fff;font-size:13px">
+        <span id="tip-deploy" style="font-size:10px;color:var(--blue)"></span>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)">
+        Deploy→Backend (host:port) <span style="color:#f59e0b">⚠️ host ปกติ 127.0.0.1 (อย่าใส่ IP ตัวเอง)</span>
+        <span style="display:flex;gap:4px">
+          <input id="pcfg-dbhost" type="text" placeholder="127.0.0.1"
+            style="width:120px;padding:8px 10px;background:#111827;border:1px solid var(--border);border-radius:6px;color:#fff;font-size:13px">
+          <input id="pcfg-dbport" type="number" min="1" max="65535"
+            style="width:80px;padding:8px 10px;background:#111827;border:1px solid var(--border);border-radius:6px;color:#fff;font-size:13px">
+        </span>
+      </label>
+      <button class="btn-open" id="pcfg-save" onclick="savePorts()"
+        style="padding:9px 16px;background:#2563eb;color:#fff;border:none">💾 บันทึกพอร์ต</button>
+      <button class="btn-open" id="pcfg-restart" onclick="restartForPorts()"
+        style="padding:9px 16px">♻ Restart Backend+Frontend</button>
+    </div>
+    <div id="pcfg-msg" style="font-size:11.5px;color:var(--dim);padding:8px 2px 2px"></div>
+  </div>
+
+  <!-- Port monitor table -->
+  <div class="ports-card">
+    <div class="ports-head">
+      <h3>🔌 Port Monitor</h3>
+      <span class="sub">real-time · 1s interval</span>
+      <span id="port-pulse" class="pulsing" style="margin-left:8px;color:var(--green);font-size:11px">●</span>
+    </div>
+    <table class="ports-table">
+      <thead><tr>
+        <th>PORT</th><th>STATUS</th><th>SERVICE</th><th>PIDs</th><th>ACTION</th>
+      </tr></thead>
+      <tbody id="port-table-body">
+        <tr><td colspan="5" style="color:var(--dim);text-align:center;padding:20px">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Quick links (href/url อัปเดตตามพอร์ตจริงโดย applyPorts) -->
+  <div class="links">
+    <a class="link-card" id="lc-dash" data-kind="frontend" href="http://localhost:3012" target="_blank">
+      <span class="lc-label">DASHBOARD</span>
+      <span class="lc-url">localhost:3012</span>
+      <span class="lc-desc">Flutter Web HMI Designer</span>
+    </a>
+    <a class="link-card" id="lc-values" data-kind="backend" data-path="/api/values" href="http://localhost:4012/api/values" target="_blank">
+      <span class="lc-label">LIVE VALUES</span>
+      <span class="lc-url">localhost:4012/api/values</span>
+      <span class="lc-desc">All tag values (JSON)</span>
+    </a>
+    <a class="link-card" id="lc-devices" data-kind="backend" data-path="/api/devices" href="http://localhost:4012/api/devices" target="_blank">
+      <span class="lc-label">DEVICES</span>
+      <span class="lc-url">localhost:4012/api/devices</span>
+      <span class="lc-desc">Device config</span>
+    </a>
+    <a class="link-card" id="lc-tags" data-kind="backend" data-path="/api/tags" href="http://localhost:4012/api/tags" target="_blank">
+      <span class="lc-label">TAGS</span>
+      <span class="lc-url">localhost:4012/api/tags</span>
+      <span class="lc-desc">All tags (JSON)</span>
+    </a>
+  </div>
+
+  <!-- LAN access — เปิดจากเครื่องอื่นใน network เดียวกัน (อัปเดตจาก /api/status .lanIps) -->
+  <div class="ports-card" id="lan-card" style="display:none">
+    <div class="ports-title">🌐 เปิดจากเครื่องอื่นใน LAN</div>
+    <div id="lan-urls" class="links"></div>
+    <div style="font-size:11px;color:var(--dim);margin-top:10px">
+      เครื่องอื่นในเครือข่ายเดียวกันเปิด URL ด้านบนได้เลย · ต้องเปิด firewall อนุญาตพอร์ต ·
+      backend (:<span id="lan-bport">4012</span>) เป็น internal ไม่ต้องเปิดสู่เน็ต ·
+      <strong>แก้ Dashboard ได้ทีละคน</strong> (คนอื่นเป็น view จนกว่าจะเตะเข้าแทน)
+    </div>
+  </div>
+
+  <!-- API token card — เปิด/ปิด + reset (คุม backend + manager) -->
+  <div class="ports-card" id="token-card">
+    <div class="ports-title">🔑 API Token (backend ↔ frontend/deploy)</div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;padding:6px 2px 2px">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="token-enabled" onchange="toggleToken(event)" style="width:16px;height:16px">
+        เปิดใช้ API token
+      </label>
+      <span style="font-size:12px;color:var(--dim)">token: <strong id="token-masked" style="font-family:monospace;color:var(--blue)">—</strong></span>
+      <button class="btn-open" onclick="resetToken()" style="padding:8px 14px">♻ รีเซต token</button>
+      <span id="token-msg" style="font-size:11.5px;color:var(--dim)"></span>
+    </div>
+    <div style="font-size:11px;color:var(--dim);margin-top:8px;line-height:1.5">
+      token "ตายตัว" แชร์ให้ backend+serve+deploy (browser ไม่ถือ) · เปิด/รีเซต = restart backend+frontend+deploy อัตโนมัติ ·
+      ป้องกัน <strong>การเข้า backend ที่ไม่ผ่าน proxy</strong> (เช่น backend เปิดออก LAN) · <strong>ยังไม่กัน user ที่เข้าผ่านเว็บ</strong> (ใช้ login-gate §33.3 ภายหลัง)
+    </div>
+  </div>
+
+  <!-- HTTPS (TLS) — frontend + deploy -->
+  <div class="ports-card" id="tls-card">
+    <div class="ports-title">🔐 HTTPS (TLS) — เว็บ frontend + deploy</div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;padding:6px 2px 2px">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="tls-enabled" style="width:16px;height:16px"> เปิด HTTPS
+      </label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)">
+        Cert (.pem)
+        <input id="tls-cert" type="text" placeholder="/path/cert.pem"
+          style="width:240px;padding:8px 10px;background:#111827;border:1px solid var(--border);border-radius:6px;color:#fff;font-size:12px">
+      </label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)">
+        Key (.pem)
+        <input id="tls-key" type="text" placeholder="/path/key.pem"
+          style="width:240px;padding:8px 10px;background:#111827;border:1px solid var(--border);border-radius:6px;color:#fff;font-size:12px">
+      </label>
+      <button class="btn-open" onclick="genSelfSigned()" style="padding:8px 14px">⚙ สร้าง self-signed</button>
+      <button class="btn-open" onclick="saveTls()" style="padding:8px 14px;background:#2563eb;color:#fff;border:none">💾 บันทึก + รีสตาร์ท</button>
+      <span id="tls-msg" style="font-size:11.5px;color:var(--dim)"></span>
+    </div>
+    <div style="font-size:11px;color:var(--dim);margin-top:8px;line-height:1.5">
+      TLS ใส่ที่ "ขอบ" (เว็บ :frontend/:deploy) · backend/manager คง http ภายใน (proxy ผ่าน TLS ที่ขอบ) ·
+      บันทึกแล้ว restart frontend+deploy อัตโนมัติ · self-signed cert browser จะเตือนครั้งแรก (กดยอมรับ/Advanced→Proceed) ·
+      domain จริง → ใช้ cert จาก CA/Let's Encrypt · ดูคู่มือ <code>docs/คู่มือ-กู้รหัส-Login.md</code> / handoff §33.2
+    </div>
+  </div>
+
+  <!-- Access gate — login เข้า Manager (UI-level) -->
+  <div class="ports-card" id="gate-card">
+    <div class="ports-title">🔒 ล็อกการเข้า Manager (Access gate)</div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;padding:6px 2px 2px">
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)">
+        <span id="gate-pwlabel">รหัสผ่าน</span>
+        <input id="gate-setpw" type="password" placeholder="ตั้ง/เปลี่ยนรหัส"
+          style="width:200px;padding:8px 10px;background:#111827;border:1px solid var(--border);border-radius:6px;color:#fff;font-size:13px">
+      </label>
+      <button class="btn-open" onclick="setGatePassword()" style="padding:8px 14px">🔑 ตั้งรหัส</button>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin-left:8px">
+        <input type="checkbox" id="gate-enabled" onchange="toggleGate(event)" style="width:16px;height:16px">
+        เปิดล็อก (ต้อง login)
+      </label>
+      <span id="gate-msg" style="font-size:11.5px;color:var(--dim)"></span>
+    </div>
+    <div style="font-size:11px;color:var(--dim);margin-top:8px">
+      ต้อง login ก่อนใช้ Manager · แยกจากสิทธิ์ผู้ใช้ (§21) · มีผลครั้งถัดไปที่เปิดหน้านี้ · ตั้งรหัสก่อนเปิดล็อก
+    </div>
+  </div>
+
+  <!-- System Requirements card -->
+  <div class="ports-card" id="req-card">
+    <div class="ports-head">
+      <h3>🧰 System Requirements</h3>
+      <span class="sub">ตรวจเวอร์ชันโปรแกรมที่จำเป็น · ติดตั้ง/อัปเดตได้เอง</span>
+      <span id="req-platform" class="sub" style="margin-left:auto"></span>
+      <button class="btn-open" id="req-refresh" onclick="loadRequirements()" style="margin-left:10px;padding:5px 12px;font-size:11px">🔄 ตรวจใหม่</button>
+    </div>
+    <table class="ports-table">
+      <thead><tr>
+        <th>PROGRAM</th><th>STATUS</th><th>INSTALLED</th><th>REQUIRED</th><th>ACTION</th>
+      </tr></thead>
+      <tbody id="req-table-body">
+        <tr><td colspan="5" style="color:var(--dim);text-align:center;padding:20px">กำลังตรวจสอบ…</td></tr>
+      </tbody>
+    </table>
+    <div class="log-bar" onclick="toggleReqLog()">
+      <span>INSTALL OUTPUT</span><span class="log-toggle" id="lt-req">▼ show</span>
+    </div>
+    <div class="log-box" id="log-req" style="color:#93c5fd"></div>
+  </div>
+
+  <!-- Remote Sites (Gateway · R3) — operate serverB เต็มจอผ่าน serverA -->
+  <div class="ports-card" id="remote-card">
+    <div class="ports-head">
+      <h3>🌐 Remote Sites (operate ผ่าน gateway)</h3>
+      <span class="sub">serverA เปิดพอร์ตต่อ → ควบคุม serverB เต็มจอ (serverB ต้องเปิด "Remote access" + ใส่ IP ของเครื่องนี้)</span>
+      <button class="btn-open" onclick="loadRemoteSites()" style="margin-left:auto;padding:5px 12px;font-size:11px">🔄 รีเฟรช</button>
+    </div>
+    <table class="ports-table">
+      <thead><tr><th>ชื่อ</th><th>IP serverB</th><th>พอร์ต A&nbsp;→&nbsp;B (แก้ได้)</th><th>สถานะ</th><th>จัดการ</th></tr></thead>
+      <tbody id="remote-table-body">
+        <tr><td colspan="5" style="color:var(--dim);text-align:center;padding:16px">— ยังไม่มี site —</td></tr>
+      </tbody>
+    </table>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:10px 2px 2px;font-size:12px;border-top:1px dashed var(--border);margin-top:4px">
+      <span style="color:#60a5fa;font-weight:700;white-space:nowrap">+ เพิ่ม site:</span>
+      <input id="rs-name" type="text" placeholder="ชื่อ (เช่น Line B)" style="width:120px;padding:7px;background:#111827;color:#e5e7eb;border:1px solid var(--border);border-radius:6px;font-size:12px">
+      <input id="rs-host" type="text" placeholder="IP serverB (10.20.0.5)" title="ที่อยู่เครื่อง serverB — คนละเรื่องกับพอร์ตต้นทาง" style="flex:1;min-width:130px;padding:7px;background:#111827;color:#e5e7eb;border:1px solid var(--border);border-radius:6px;font-size:12px">
+      <span style="color:#33415a;font-size:22px;font-weight:300;margin:0 1px;line-height:1" title="คนละกลุ่ม">│</span>
+      <span style="color:#86efac;font-size:11px;white-space:nowrap">ต้นทาง(A)</span>
+      <input id="rs-listen" type="number" placeholder="15000" title="พอร์ตต้นทางบน serverA (user เข้าที่นี่ · กำหนดเอง · ไม่เกี่ยวกับ IP serverB)" style="width:84px;padding:7px;background:#0b2a18;color:#86efac;border:1px solid #166534;border-radius:6px;font-size:12px;font-weight:700;text-align:center">
+      <span style="color:#60a5fa;font-weight:700">→</span>
+      <span style="color:#93c5fd;font-size:11px;white-space:nowrap">ปลายทาง(B)</span>
+      <input id="rs-port" type="number" placeholder="3012" value="3012" title="พอร์ตปลายทาง serverB (frontend · กำหนดเอง)" style="width:72px;padding:7px;background:#111827;color:#e5e7eb;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:center">
+      <button id="rs-save-btn" onclick="saveRemoteSite()" style="background:#2563eb;color:#fff;border:0;border-radius:6px;padding:8px 14px;font-weight:700;cursor:pointer">+ เพิ่ม</button>
+    </div>
+    <div style="font-size:10.5px;color:var(--dim);padding:0 2px"><b style="color:#e5e7eb">IP serverB</b> = เครื่องปลายทาง · เส้น <span style="color:#7b8aaa">│</span> คั่นว่าพอร์ตเป็นคนละเรื่อง — <b style="color:#86efac">ต้นทาง(A)</b> พอร์ตบน serverA ที่ user เข้า (<code>http://serverA:&lt;ต้นทาง&gt;</code>) → <b style="color:#93c5fd">ปลายทาง(B)</b> พอร์ต serverB · แก้ในตารางแล้วกด Enter เพื่อบันทึก</div>
+    <div id="rs-msg" style="font-size:11.5px;color:var(--dim);margin-top:6px"></div>
+  </div>
+
+  <!-- Embed Proxy — allowlist โดเมนที่อนุญาตฝัง (Web Embed widget · strip X-Frame-Options) -->
+  <div class="ports-card" id="embed-card">
+    <div class="ports-head">
+      <h3>🖼 Embed Proxy (โดเมนที่อนุญาตฝัง)</h3>
+      <span class="sub">Web Embed widget โหมด proxy → ฝังเว็บที่ตั้ง X-Frame-Options ได้ (เฉพาะโดเมนในรายการ · กัน SSRF)</span>
+      <button class="btn-open" onclick="loadEmbedAllow()" style="margin-left:auto;padding:5px 12px;font-size:11px">🔄 รีเฟรช</button>
+    </div>
+    <div id="embed-list" style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 2px"></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 2px 2px;font-size:12px;border-top:1px dashed var(--border);margin-top:4px">
+      <span style="color:#60a5fa;font-weight:700;white-space:nowrap">+ เพิ่มโดเมน:</span>
+      <input id="ep-domain" type="text" placeholder="thaiparker.co.th" onkeydown="if(event.key==='Enter')addEmbedDomain()" style="flex:1;min-width:160px;padding:7px;background:#111827;color:#e5e7eb;border:1px solid var(--border);border-radius:6px;font-size:12px">
+      <button onclick="addEmbedDomain()" style="background:#2563eb;color:#fff;border:0;border-radius:6px;padding:8px 14px;font-weight:700;cursor:pointer">+ เพิ่ม</button>
+    </div>
+    <div style="font-size:10.5px;color:var(--dim);padding:0 2px">ใส่เฉพาะโดเมน (เช่น <code>thaiparker.co.th</code>) — ครอบ subdomain (<code>www.</code>) ให้อัตโนมัติ · ฝังในจอ HMI ที่ Web Embed (✅ ผ่าน proxy)</div>
+    <div id="ep-msg" style="font-size:11.5px;color:var(--dim);margin-top:6px"></div>
+  </div>
+
+</div><!-- /container -->
+
+<script>
+// ── Auth: แนบ Manager login-gate token ให้ทุก request /api/* — กัน API-token guard 401 เมื่อเข้าจาก LAN ──
+//   (server ยอมรับ token นี้ผ่าน header x-gate-token / query ?gate= เมื่อเปิด managerLogin)
+const GATE_TOKEN_KEY = 'kpe_mgr_gate_token';
+(function () {
+  const _origFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    try {
+      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      if (url.indexOf('/api') === 0) {
+        const tok = localStorage.getItem(GATE_TOKEN_KEY) || '';
+        if (tok) {
+          init = init || {};
+          const h = new Headers(init.headers || (typeof input !== 'string' && input.headers) || {});
+          if (!h.has('x-gate-token')) h.set('x-gate-token', tok);
+          init.headers = h;
+        }
+      }
+    } catch (_) {}
+    return _origFetch(input, init);
+  };
+})();
+// EventSource ตั้ง header ไม่ได้ → แนบ token ผ่าน query string
+function gatedUrl(path) {
+  const tok = localStorage.getItem(GATE_TOKEN_KEY) || '';
+  if (!tok) return path;
+  return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'gate=' + encodeURIComponent(tok);
+}
+
+// ── Service ↔ port map (dynamic ตามพอร์ตจริง จาก /api/status .config) ──────────────
+let PORTS      = { frontend: 3012, backend: 4012, manager: 5012 };
+let SVC_PORT   = { backend: 4012, frontend: 3012 };
+let PORT_LABEL = { 3012: 'Frontend', 4012: 'Backend', 5012: 'Manager' };
+
+// อัปเดต label/link/kill/ฟอร์ม ให้ตรงพอร์ตจริง
+let TLS_ON = false;   // HTTPS ที่ขอบ (frontend/deploy) เปิดอยู่ไหม — จาก cfg.tls.enabled
+function edgeScheme() { return TLS_ON ? 'https' : 'http'; }   // frontend/deploy · backend/manager คง http
+function applyPorts(cfg) {
+  if (!cfg || !cfg.frontend) return;
+  PORTS = { frontend: cfg.frontend, backend: cfg.backend, manager: cfg.manager, deploy: cfg.deploy };
+  SVC_PORT = { backend: PORTS.backend, frontend: PORTS.frontend, deploy: PORTS.deploy };
+  PORT_LABEL = { [PORTS.frontend]: 'Frontend', [PORTS.backend]: 'Backend', [PORTS.manager]: 'Manager', [PORTS.deploy]: 'Deploy' };
+  TLS_ON = !!(cfg.tls && cfg.tls.enabled);
+  const host = location.hostname;
+  const es = edgeScheme();
+  const txt = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  txt('pnum-backend', PORTS.backend);
+  txt('pnum-frontend', PORTS.frontend);
+  txt('pnum-deploy', PORTS.deploy);
+  const onclk = (id, fn) => { const e = document.getElementById(id); if (e) e.onclick = fn; };
+  onclk('pkill-backend',  () => killPort(PORTS.backend, 'backend'));
+  onclk('pkill-frontend', () => killPort(PORTS.frontend, 'frontend'));
+  onclk('pkill-deploy',   () => killPort(PORTS.deploy, 'deploy'));
+  onclk('open-backend',   () => window.open(`http://${host}:${PORTS.backend}/api/health`, '_blank'));   // backend = http ภายใน
+  onclk('open-frontend',  () => window.open(`${es}://${host}:${PORTS.frontend}`, '_blank'));
+  onclk('open-deploy',    () => window.open(`${es}://${host}:${PORTS.deploy}`, '_blank'));
+  document.querySelectorAll('.link-card[data-kind]').forEach(a => {
+    const isBackend = a.dataset.kind === 'backend';
+    const port = isBackend ? PORTS.backend : PORTS.frontend;
+    const sch = isBackend ? 'http' : es;     // backend คง http · frontend ตาม TLS
+    const p = a.dataset.path || '';
+    a.href = `${sch}://${host}:${port}${p}`;
+    const u = a.querySelector('.lc-url'); if (u) u.textContent = `${host}:${port}${p}`;
+  });
+  // เติมฟอร์ม (ไม่ทับถ้ากำลังพิมพ์)
+  const f = (id, v) => { const e = document.getElementById(id); if (e && document.activeElement !== e) e.value = v; };
+  f('pcfg-frontend', PORTS.frontend); f('pcfg-backend', PORTS.backend); f('pcfg-manager', PORTS.manager);
+  f('pcfg-deploy', PORTS.deploy); f('pcfg-dbhost', cfg.deployBackendHost || '127.0.0.1'); f('pcfg-dbport', cfg.deployBackendPort || PORTS.backend);
+  updatePortTips();
+}
+
+// ── ป้ายบอก "ปัจจุบันเข้าผ่าน ip:port อะไร" ใต้ช่องกรอกพอร์ต ──────────────────────
+let LAN_IPS = [];
+function updatePortTips() {
+  const host = (LAN_IPS && LAN_IPS[0]) || location.hostname;   // LAN IP ถ้ารู้ ไม่งั้น host ที่เปิดอยู่
+  const set = (id, txt) => { const e = document.getElementById(id); if (e) e.textContent = txt; };
+  const es = edgeScheme();
+  set('tip-frontend', `🔗 ${es}://${host}:${PORTS.frontend}`);
+  set('tip-backend',  `🔒 127.0.0.1:${PORTS.backend} (ภายใน)`);
+  set('tip-manager',  `🔗 http://${host}:${PORTS.manager}`);
+  set('tip-deploy',   `🔗 ${es}://${host}:${PORTS.deploy}`);
+}
+
+function loadPortsForm() {
+  fetch('/api/ports').then(r => r.json()).then(d => { if (d.ok) applyPorts(d.ports); }).catch(() => {});
+}
+
+// แสดง URL สำหรับเปิดจากเครื่องอื่นใน LAN (edit :frontend / deployed :deploy ต่อ IP)
+function renderLanUrls(lanIps, cfg) {
+  const card = document.getElementById('lan-card');
+  const box  = document.getElementById('lan-urls');
+  if (!card || !box) return;
+  LAN_IPS = lanIps || [];
+  updatePortTips();   // ให้ป้ายใต้ช่องพอร์ตใช้ LAN IP จริง (ไม่ใช่ localhost)
+  if (!lanIps || !lanIps.length || !cfg) { card.style.display = 'none'; return; }
+  const bp = document.getElementById('lan-bport'); if (bp) bp.textContent = cfg.backend;
+  const es = (cfg.tls && cfg.tls.enabled) ? 'https' : 'http';   // frontend/deploy ตาม TLS
+  let html = '';
+  for (const ip of lanIps) {
+    html += `<a class="link-card" href="${es}://${ip}:${cfg.frontend}" target="_blank">`
+          + `<span class="lc-label">EDIT / DESIGNER</span>`
+          + `<span class="lc-url">${es}://${ip}:${cfg.frontend}</span>`
+          + `<span class="lc-desc">แก้ไข Dashboard (ทีละคน)</span></a>`;
+    html += `<a class="link-card" href="${es}://${ip}:${cfg.deploy}" target="_blank">`
+          + `<span class="lc-label">DEPLOYED (RUN)</span>`
+          + `<span class="lc-url">${es}://${ip}:${cfg.deploy}</span>`
+          + `<span class="lc-desc">หน้าใช้งานจริง (run-mode)</span></a>`;
+  }
+  box.innerHTML = html;
+  card.style.display = '';
+}
+
+async function savePorts() {
+  const num = id => { const v = parseInt(document.getElementById(id).value, 10); return Number.isFinite(v) ? v : undefined; };
+  const msg = document.getElementById('pcfg-msg');
+  const dbhost = (document.getElementById('pcfg-dbhost').value || '').trim();
+  const r = await fetch('/api/ports', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      frontend: num('pcfg-frontend'), backend: num('pcfg-backend'), manager: num('pcfg-manager'),
+      deploy: num('pcfg-deploy'), deployBackendPort: num('pcfg-dbport'),
+      deployBackendHost: dbhost || undefined,
+    }),
+  }).then(r => r.json()).catch(() => ({ ok: false, error: 'network' }));
+  if (r.ok) {
+    applyPorts(r.ports);
+    msg.style.color = '#4ade80';
+    msg.textContent = '✓ บันทึกแล้ว — กด "Restart Backend+Frontend" เพื่อใช้พอร์ตใหม่ (เปลี่ยนพอร์ต Manager ต้อง relaunch ตัว Manager เอง)';
+  } else {
+    msg.style.color = '#f87171';
+    msg.textContent = '✗ ' + (r.error || 'error');
+  }
+}
+
+async function restartForPorts() {
+  const msg = document.getElementById('pcfg-msg');
+  msg.style.color = 'var(--dim)';
+  msg.textContent = 'กำลัง restart backend + frontend …';
+  await fetch('/api/backend/restart', { method: 'POST' }).catch(() => {});
+  await fetch('/api/frontend/restart', { method: 'POST' }).catch(() => {});
+  msg.textContent = 'สั่ง restart แล้ว — ถ้าเปลี่ยน "พอร์ตหลัก" ให้เปิด Dashboard ที่พอร์ตใหม่ (http://' + location.hostname + ':' + PORTS.frontend + ')';
+  setTimeout(loadPortsForm, 2500);
+}
+
+// ── Clock ─────────────────────────────────────────────────────────
+setInterval(() => {
+  document.getElementById('clock').textContent = new Date().toLocaleString('th-TH');
+}, 1000);
+
+// ── Log toggle ────────────────────────────────────────────────────
+function toggleLog(name) {
+  const box = document.getElementById('log-' + name);
+  const tog = document.getElementById('lt-' + name);
+  const open = box.classList.toggle('open');
+  tog.textContent = open ? '▲ hide' : '▼ show';
+}
+
+// ── Render process status ─────────────────────────────────────────
+function setProc(name, running) {
+  const dot   = document.getElementById('proc-dot-' + name);
+  const badge = document.getElementById('badge-' + name);
+  const btnS  = document.getElementById('btn-start-' + name);
+  const btnT  = document.getElementById('btn-stop-'  + name);
+
+  dot.className   = 'proc-dot ' + (running ? 'on' : 'off');
+  badge.className = 'badge '    + (running ? 'badge-on' : 'badge-off');
+  badge.textContent = running ? 'ONLINE' : 'OFFLINE';
+  btnS.disabled   = running;
+  btnT.disabled   = !running;
+}
+
+// ── Render port status ────────────────────────────────────────────
+function setPort(name, port, open, pids) {
+  const pdot  = document.getElementById('pdot-'   + name);
+  const ppids = document.getElementById('ppids-'  + name);
+  const plbl  = document.getElementById('plabel-' + name);
+  const pkill = document.getElementById('pkill-'  + name);
+  const card  = document.getElementById('card-'   + name);
+  const bar   = document.getElementById('bar-'    + name);
+
+  if (!pdot) return;
+  pdot.className = 'port-dot ' + (open ? 'open' : 'closed');
+
+  if (open && pids.length) {
+    ppids.innerHTML = pids.map(p => `<span class="pid-chip">${p}</span>`).join('');
+    plbl.textContent  = `${pids.length} PID(s)`;
+    pkill.disabled    = false;
+    card.classList.add('online');
+    bar.style.background = 'var(--green)';
+  } else {
+    ppids.textContent = '—';
+    plbl.textContent  = 'not in use';
+    pkill.disabled    = true;
+    card.classList.remove('online');
+    bar.style.background = 'var(--muted)';
+  }
+}
+
+// ── Render port monitor table ─────────────────────────────────────
+const portData = {};    // port → { open, pids }
+let pulseTimer = null;
+
+function renderPortTable() {
+  const tbody = document.getElementById('port-table-body');
+  const ports = Object.keys(portData).map(Number).sort((a,b)=>a-b);
+  if (!ports.length) return;
+
+  tbody.innerHTML = ports.map(port => {
+    const { open, pids } = portData[port];
+    const svcName = PORT_LABEL[port] || `port ${port}`;
+    const isSelf  = port === PORTS.manager;
+    const pidHtml = pids.length
+        ? pids.map(p => `<span class="pid-chip">${p}</span>`).join('')
+        : '<span style="color:var(--dim)">—</span>';
+    const killBtn = (!isSelf && pids.length)
+        ? `<button class="kill-btn-sm" onclick="killPort(${port})">⚡ Kill</button>`
+        : `<button class="kill-btn-sm" disabled>${isSelf ? 'self' : 'idle'}</button>`;
+
+    return `<tr>
+      <td><strong style="font-family:monospace;color:var(--blue)">${port}</strong></td>
+      <td>
+        <span class="port-status-dot ${open ? 'open' : 'closed'}"></span>
+        <span style="font-weight:600;color:${open ? 'var(--green)' : 'var(--dim)'}">
+          ${open ? 'LISTENING' : 'CLOSED'}
+        </span>
+      </td>
+      <td style="color:var(--dim);font-size:12px">${svcName}</td>
+      <td>${pidHtml}</td>
+      <td>${killBtn}</td>
+    </tr>`;
+  }).join('');
+
+  // Pulse indicator
+  clearTimeout(pulseTimer);
+  const pulse = document.getElementById('port-pulse');
+  pulse.style.opacity = '1';
+  pulseTimer = setTimeout(() => pulse.style.opacity = '.4', 300);
+}
+
+function updatePort(port, open, pids) {
+  portData[port] = { open, pids };
+  renderPortTable();
+
+  // Also update service card if it matches
+  const name = Object.entries(SVC_PORT).find(([,p])=>p===port)?.[0];
+  if (name) setPort(name, port, open, pids);
+}
+
+// ── Append log line ───────────────────────────────────────────────
+function appendLog(name, line) {
+  const box = document.getElementById('log-' + name);
+  if (!box) return;
+  const div = document.createElement('div');
+  div.className = 'log-line' + (
+    line.toLowerCase().includes('error') || line.toLowerCase().includes('err ')
+      ? ' log-err' : ''
+  );
+  div.textContent = `[${new Date().toLocaleTimeString('th-TH')}] ${line}`;
+  box.appendChild(div);
+  if (box.children.length > 200) box.removeChild(box.firstChild);
+  box.scrollTop = box.scrollHeight;
+}
+
+// ── Branding (ชื่อ + โลโก้ ของ Manager เอง) ───────────────────────
+let BRAND_LOGO = '';   // data URL ที่กำลังแก้
+let BRAND_FIT = 'contain';
+function cssFit(f) { return f === 'scaleDown' ? 'scale-down' : (f || 'contain'); }
+function applyBranding(b) {
+  const name = (b && b.appName) || 'KPE SCADA Manager';
+  const logo = (b && b.logo) || '';
+  const fit = (b && b.logoFit) || 'contain';
+  document.getElementById('mgr-logo-text').textContent = name;
+  document.title = name;
+  const icon = document.getElementById('mgr-logo-icon');
+  if (logo) { icon.innerHTML = `<img src="${logo}" style="width:100%;height:100%;object-fit:${cssFit(fit)};border-radius:7px">`; }
+  else { icon.textContent = '⚡'; }
+  // favicon
+  let link = document.querySelector("link[rel~='icon']");
+  if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+  if (logo) link.href = logo;
+  // เติมฟอร์มแก้
+  const f = document.getElementById('brand-name'); if (f && document.activeElement !== f) f.value = name;
+  const fsel = document.getElementById('brand-fit'); if (fsel) fsel.value = fit;
+  BRAND_LOGO = logo; BRAND_FIT = fit;
+  updateBrandPreview();
+}
+// ── License (Pi-only activation · §LICENSING) ──────────────────────────────────
+function loadLicense() { fetch(gatedUrl('/api/license')).then(r => r.json()).then(applyLicense).catch(() => {}); }
+function applyLicense(s) {
+  const panel = document.getElementById('license-panel');
+  const active = document.getElementById('license-active');
+  if (!panel) return;
+  if (s && s.blocked) {   // invalid → แถบแดง (activate)
+    panel.style.display = '';
+    const usbMsg = (s.mode === 'usb' && !s.usbPresent) ? ' · 🔌 โหมด USB — เสียบ master key เพื่อเริ่มระบบ' : '';
+    document.getElementById('lic-reason').textContent = '· ' + (s.reason || '') + usbMsg;
+    document.getElementById('lic-mid').textContent = s.machineId || '';
+    document.getElementById('lic-fp').textContent = s.fingerprint || '';
+    if (active) active.style.display = 'none';
+    return;
+  }
+  panel.style.display = 'none';
+  // มี license ใช้งานได้บนเครื่อง enforced (Pi/Windows) → แถบเขียว + ปุ่มถอด · not-enforced / not-armed → ซ่อนทั้งคู่
+  if (active) {
+    if (s && s.ok && (s.enforced || s.isPi)) {
+      active.style.display = 'flex';
+      document.getElementById('lic-active-info').textContent =
+        (s.customer ? s.customer + ' · ' : '') + (s.machineId || '')
+        + (s.tier ? ' · ' + (s.tier === 'base' ? 'Base' : 'Backend') : '')
+        + (s.features && s.features.length ? ' · DLC: ' + s.features.join(', ') : '')
+        + (s.exp ? ' · exp ' + s.exp : ' · perpetual');
+    } else active.style.display = 'none';
+  }
+}
+// popup ยืนยัน/แจ้งเตือน (reuse) — kpeConfirm({icon,title,message,confirmText,danger,onYes})
+let _kpeModalCb = null;
+function kpeConfirm(o) {
+  o = o || {};
+  const danger = o.danger !== false;   // default = แดง (อันตราย)
+  document.getElementById('kpe-modal-icon').textContent = o.icon || (danger ? '⚠️' : 'ℹ️');
+  document.getElementById('kpe-modal-title').textContent = o.title || 'ยืนยัน';
+  document.getElementById('kpe-modal-body').textContent = o.message || '';
+  const head = document.getElementById('kpe-modal-head');
+  head.style.background = danger ? '#2a1215' : '#0b2a18';
+  head.style.borderBottomColor = danger ? '#7f1d1d' : '#166534';
+  document.getElementById('kpe-modal-title').style.color = danger ? '#fca5a5' : '#86efac';
+  const ok = document.getElementById('kpe-modal-ok');
+  ok.textContent = o.confirmText || 'ยืนยัน';
+  ok.style.background = danger ? '#dc2626' : '#2563eb';
+  document.getElementById('kpe-modal-cancel').style.display = (o.alert === true) ? 'none' : '';
+  _kpeModalCb = o.onYes || null;
+  document.getElementById('kpe-modal').style.display = 'flex';
+}
+function kpeModalClose(yes) {
+  document.getElementById('kpe-modal').style.display = 'none';
+  const cb = _kpeModalCb; _kpeModalCb = null;
+  if (yes && cb) cb();
+}
+function copyMid() {   // คัดลอก fingerprint (64hex · vendor ใช้ sign) · fallback = machine-id
+  const fp = (document.getElementById('lic-fp') || {}).textContent || '';
+  const mid = (document.getElementById('lic-mid') || {}).textContent || '';
+  const txt = (fp || mid).trim(); if (!txt) return;
+  const done = () => { const b = document.getElementById('lic-copy'); if (b) { const o = b.textContent; b.textContent = 'คัดลอกแล้ว ✓'; setTimeout(() => b.textContent = o, 1500); } };
+  try { navigator.clipboard.writeText(txt).then(done).catch(done); } catch (_) { done(); }
+}
+function removeLicense() {
+  kpeConfirm({
+    icon: '🔒', title: 'ถอด license', confirmText: 'ถอด license',
+    message: 'ถอด license ออกจากเครื่องนี้?\n\nระบบจะถูกบล็อก (HMI + backend หยุด) จนกว่าจะ activate ใหม่\nlicense.key จะถูก backup ไว้ที่เครื่อง (กู้คืนได้)',
+    onYes: () => {
+      const m = document.getElementById('lic-active-msg'); if (m) m.textContent = 'กำลังถอด…';
+      fetch(gatedUrl('/api/license'), { method: 'DELETE' })
+        .then(r => r.json()).then(s => {
+          applyLicense(s);
+          kpeConfirm({ icon: '✓', title: 'ถอด license แล้ว', danger: false, alert: true, confirmText: 'ตกลง',
+            message: 'ถอด license เรียบร้อย · ระบบถูกบล็อก\nactivate ใหม่เพื่อกลับมาใช้งาน', onYes: () => location.reload() });
+        })
+        .catch(() => kpeConfirm({ icon: '✗', title: 'ผิดพลาด', danger: true, alert: true, confirmText: 'ปิด', message: 'ถอด license ไม่สำเร็จ · ลองใหม่' }));
+    }
+  });
+}
+function onLicFile(ev) {
+  const f = ev.target.files && ev.target.files[0]; if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => { document.getElementById('lic-input').value = (rd.result || '').toString().trim(); };
+  rd.readAsText(f);
+}
+function licMsg(m) { const e = document.getElementById('lic-msg'); if (e) e.textContent = m; }
+function installLicense() {
+  const b64 = document.getElementById('lic-input').value.trim();
+  if (!b64) { licMsg('วาง base64 หรือเลือกไฟล์ license.key ก่อน'); return; }
+  licMsg('กำลังติดตั้ง…');
+  fetch(gatedUrl('/api/license'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ license: b64 }) })
+    .then(r => r.json()).then(s => {
+      if (s.installed && !s.blocked) { licMsg('✓ ติดตั้งสำเร็จ · กำลัง start service…'); applyLicense(s); setTimeout(() => location.reload(), 1500); }
+      else licMsg('✗ ไม่สำเร็จ: ' + (s.installReason || s.reason || 'invalid'));
+    }).catch(() => licMsg('✗ ผิดพลาด'));
+}
+
+// [DLC] เพิ่มใบ add-on แบบ stack (ไม่ทับ Base) → POST /api/license/addon
+function toggleAddDlc() { const e = document.getElementById('dlc-add'); e.style.display = e.style.display === 'none' ? 'flex' : 'none'; }
+function onDlcFile(ev) { const f = ev.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => { document.getElementById('dlc-input').value = (r.result || '').toString().trim(); }; r.readAsText(f); }
+function addDlc() {
+  const b64 = document.getElementById('dlc-input').value.trim();
+  const msg = document.getElementById('dlc-msg');
+  if (!b64) { msg.textContent = 'วาง base64 ใบ DLC หรือเลือกไฟล์ก่อน'; return; }
+  msg.textContent = 'กำลังติดตั้ง DLC…';
+  fetch(gatedUrl('/api/license/addon'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ license: b64 }) })
+    .then(r => r.json()).then(s => {
+      if (s.installed) { msg.textContent = '✓ เพิ่ม DLC สำเร็จ' + (s.features && s.features.length ? ' · DLC: ' + s.features.join(', ') : '') + ' · กำลังรีโหลด…'; setTimeout(() => location.reload(), 1500); }
+      else msg.textContent = '✗ ไม่สำเร็จ: ' + (s.installReason || s.reason || 'invalid');
+    }).catch(() => msg.textContent = '✗ ผิดพลาด');
+}
+function loadBranding() { fetch('/api/branding').then(r => r.json()).then(applyBranding).catch(() => {}); }
+function toggleBrandEdit() { const e = document.getElementById('brand-edit'); e.style.display = e.style.display === 'none' ? '' : 'none'; }
+function updateBrandPreview() {
+  const p = document.getElementById('brand-preview');
+  if (!p) return;
+  p.innerHTML = BRAND_LOGO ? `<img src="${BRAND_LOGO}" style="width:100%;height:100%;object-fit:${cssFit(BRAND_FIT)}">` : '🖼️';
+}
+function onBrandFit(ev) { BRAND_FIT = ev.target.value; updateBrandPreview(); }
+function onBrandFile(ev) {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) { document.getElementById('brand-msg').textContent = 'ไฟล์ใหญ่เกิน 2MB'; return; }
+  const reader = new FileReader();
+  reader.onload = () => { BRAND_LOGO = reader.result; updateBrandPreview(); };
+  reader.readAsDataURL(file);
+}
+function clearBrandLogo() { BRAND_LOGO = ''; updateBrandPreview(); const fi = document.getElementById('brand-file'); if (fi) fi.value = ''; }
+function saveBranding() {
+  const name = (document.getElementById('brand-name').value || '').trim();
+  fetch('/api/branding', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ appName: name, logo: BRAND_LOGO, logoFit: BRAND_FIT }) })
+    .then(r => r.json()).then(b => {
+      applyBranding(b);
+      document.getElementById('brand-msg').textContent = '✓ บันทึกแล้ว';
+      setTimeout(() => { document.getElementById('brand-msg').textContent = ''; }, 2500);
+    }).catch(() => { document.getElementById('brand-msg').textContent = '✗ บันทึกไม่สำเร็จ'; });
+}
+loadBranding();
+
+// ── API token ─────────────────────────────────────────────────────
+function applyToken(t) {
+  if (!t) return;
+  const cb = document.getElementById('token-enabled'); if (cb) cb.checked = t.enabled === true;
+  const m = document.getElementById('token-masked'); if (m) m.textContent = t.masked || '—';
+}
+function loadToken() { fetch('/api/token').then(r => r.json()).then(applyToken).catch(() => {}); }
+function tokenMsg(s) { const e = document.getElementById('token-msg'); if (e) { e.textContent = s; if (s) setTimeout(() => { e.textContent = ''; }, 4000); } }
+function toggleToken(ev) {
+  const enabled = ev.target.checked;
+  tokenMsg(enabled ? 'กำลังเปิด + restart service…' : 'กำลังปิด + restart service…');
+  fetch('/api/token/enable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
+    .then(r => r.json()).then(d => { applyToken(d); tokenMsg(enabled ? '✓ เปิดแล้ว (service กำลัง restart)' : '✓ ปิดแล้ว'); })
+    .catch(() => tokenMsg('✗ ผิดพลาด'));
+}
+function resetToken() {
+  kpeConfirm({
+    icon: '🔄', title: 'รีเซต token', confirmText: 'รีเซต',
+    message: 'รีเซต token ใหม่?\nถ้าเปิดใช้อยู่ backend + frontend + deploy จะ restart',
+    onYes: () => {
+      tokenMsg('กำลังรีเซต…');
+      fetch('/api/token/reset', { method: 'POST' }).then(r => r.json()).then(d => { applyToken(d); tokenMsg('✓ รีเซต token ใหม่แล้ว'); }).catch(() => tokenMsg('✗ ผิดพลาด'));
+    }
+  });
+}
+loadToken();
+
+// ── HTTPS (TLS) ───────────────────────────────────────────────────
+function tlsMsg(s) { const e = document.getElementById('tls-msg'); if (e) { e.textContent = s; if (s) setTimeout(() => { e.textContent = ''; }, 5000); } }
+function loadTls() {
+  fetch('/api/ports').then(r => r.json()).then(d => {
+    const t = d.ok && d.ports && d.ports.tls; if (!t) return;
+    document.getElementById('tls-enabled').checked = t.enabled === true;
+    document.getElementById('tls-cert').value = t.cert || '';
+    document.getElementById('tls-key').value = t.key || '';
+  }).catch(() => {});
+}
+function saveTls() {
+  const enabled = document.getElementById('tls-enabled').checked;
+  const cert = document.getElementById('tls-cert').value.trim();
+  const key = document.getElementById('tls-key').value.trim();
+  if (enabled && (!cert || !key)) { tlsMsg('ต้องระบุ cert + key ก่อนเปิด HTTPS'); return; }
+  tlsMsg('บันทึก + restart frontend/deploy…');
+  fetch('/api/ports', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tls: { enabled, cert, key } }) })
+    .then(r => r.json()).then(d => {
+      if (!d.ok) { tlsMsg(d.error || 'บันทึกไม่สำเร็จ'); return; }
+      Promise.all([
+        fetch('/api/frontend/restart', { method: 'POST' }).catch(() => {}),
+        fetch('/api/deploy/restart', { method: 'POST' }).catch(() => {}),
+      ]).then(() => tlsMsg(`✓ บันทึกแล้ว — เปิดเว็บด้วย ${enabled ? 'https' : 'http'}:// (เปลี่ยน URL เอง)`));
+    }).catch(() => tlsMsg('✗ ผิดพลาด'));
+}
+function genSelfSigned() {
+  const host = prompt('Host/IP สำหรับใบรับรอง (เช่น 192.168.1.100 หรือ localhost):', location.hostname || 'localhost');
+  if (!host) return;
+  tlsMsg('กำลังสร้าง self-signed cert…');
+  fetch('/api/tls/selfsign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host }) })
+    .then(r => r.json()).then(d => {
+      if (!d.ok) { tlsMsg(d.error || 'สร้างไม่สำเร็จ'); return; }
+      document.getElementById('tls-cert').value = d.cert;
+      document.getElementById('tls-key').value = d.key;
+      tlsMsg('✓ สร้าง cert แล้ว → กด "เปิด HTTPS" + บันทึก');
+    }).catch(() => tlsMsg('✗ ผิดพลาด'));
+}
+loadTls();
+
+// ── Access gate (login เข้า Manager) ──────────────────────────────
+// (GATE_TOKEN_KEY ประกาศไว้บนสุดแล้ว — ใช้ร่วมกับ fetch wrapper)
+function showGateOverlay(show) { document.getElementById('gate-overlay').style.display = show ? 'flex' : 'none'; }
+function gateCheck() {
+  const tok = localStorage.getItem(GATE_TOKEN_KEY) || '';
+  fetch('/api/access-gate/check?token=' + encodeURIComponent(tok)).then(r => r.json()).then(d => {
+    showGateOverlay(d.required === true && d.ok !== true);
+    const lo = document.getElementById('gate-logout-btn');
+    if (lo) lo.style.display = (d.required === true) ? '' : 'none';   // โชว์ปุ่ม logout เมื่อเปิดล็อก
+  }).catch(() => {});
+}
+function logoutGate() {
+  localStorage.removeItem(GATE_TOKEN_KEY);
+  showGateOverlay(true);          // เด้งหน้า login ทันที
+  const p = document.getElementById('gate-pw'); if (p) p.value = '';
+}
+function verifyGate() {
+  const pw = document.getElementById('gate-pw').value;
+  fetch('/api/access-gate/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) })
+    .then(r => r.json().then(d => ({ status: r.status, d })))
+    .then(({ status, d }) => {
+      if (status >= 200 && status < 300 && d.ok) { localStorage.setItem(GATE_TOKEN_KEY, d.token); document.getElementById('gate-pw').value = ''; document.getElementById('gate-err').textContent = ''; showGateOverlay(false); location.reload(); }
+      else { document.getElementById('gate-err').textContent = d.error || 'รหัสผ่านไม่ถูกต้อง'; }
+    }).catch(() => { document.getElementById('gate-err').textContent = 'ผิดพลาด'; });
+}
+function loadGateCfg() {
+  fetch('/api/access-gate').then(r => r.json()).then(g => {
+    const cb = document.getElementById('gate-enabled'); if (cb) cb.checked = g.managerLogin === true;
+    const l = document.getElementById('gate-pwlabel'); if (l) l.textContent = g.hasPassword ? 'รหัสผ่าน (ตั้งแล้ว)' : 'รหัสผ่าน (ยังไม่ตั้ง)';
+  }).catch(() => {});
+}
+function gateMsg(s) { const e = document.getElementById('gate-msg'); if (e) { e.textContent = s; if (s) setTimeout(() => { e.textContent = ''; }, 3500); } }
+function setGatePassword() {
+  const pw = (document.getElementById('gate-setpw').value || '').trim();
+  if (pw.length < 4) { gateMsg('รหัสอย่างน้อย 4 ตัว'); return; }
+  fetch('/api/access-gate', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw, token: localStorage.getItem(GATE_TOKEN_KEY) || '' }) })
+    .then(r => r.json().then(d => ({ status: r.status, d })))
+    .then(({ status, d }) => { if (status >= 400) { gateMsg(d.error || 'เปลี่ยนไม่สำเร็จ'); return; } document.getElementById('gate-setpw').value = ''; loadGateCfg(); gateMsg('✓ ตั้งรหัสแล้ว'); }).catch(() => gateMsg('✗ ผิดพลาด'));
+}
+function toggleGate(ev) {
+  const enabled = ev.target.checked;
+  fetch('/api/access-gate', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ managerLogin: enabled, token: localStorage.getItem(GATE_TOKEN_KEY) || '' }) })
+    .then(r => r.json().then(d => ({ status: r.status, d })))
+    .then(({ status, d }) => {
+      if (status >= 400) { ev.target.checked = !enabled; gateMsg(d.error || 'เปลี่ยนไม่สำเร็จ'); }
+      else { gateMsg(enabled ? '✓ เปิดล็อก (ครั้งถัดไปต้อง login)' : '✓ ปิดล็อก'); gateCheck(); }
+    }).catch(() => { ev.target.checked = !enabled; gateMsg('✗ ผิดพลาด'); });
+}
+gateCheck();
+loadGateCfg();
+loadLicense();
+loadRemoteSites();
+setInterval(loadRemoteSites, 5000);   // R4: รีเฟรชสถานะ online/listening
+loadEmbedAllow();
+
+// ── Remote Sites (Gateway · R3) ────────────────────────────────────────────
+function rsMsg(m) { const e = document.getElementById('rs-msg'); if (e) e.textContent = m; }
+function loadRemoteSites() {
+  fetch(gatedUrl('/api/remote-sites')).then(r => r.json()).then(renderRemoteSites).catch(() => {});
+}
+let _rsCache = [];      // site ล่าสุด
+function renderRemoteSites(sites) {
+  _rsCache = Array.isArray(sites) ? sites : [];
+  const tb = document.getElementById('remote-table-body');
+  if (!tb) return;
+  // กำลังพิมพ์แก้ค่าในตาราง → ข้าม re-render (กัน poll 5s ล้างค่าที่พิมพ์)
+  if (document.activeElement && tb.contains(document.activeElement)) return;
+  if (!_rsCache.length) {
+    tb.innerHTML = '<tr><td colspan="5" style="color:var(--dim);text-align:center;padding:16px">— ยังไม่มี site · เพิ่มด้านล่าง —</td></tr>';
+    return;
+  }
+  // ช่องแก้ inline: text สำหรับ name/host · number สำหรับ port · Enter = บันทึก
+  const inp = (id, field, val, w, extra) =>
+    `<input type="${(field === 'host' || field === 'name') ? 'text' : 'number'}" value="${esc(val)}" `
+    + `onchange="updateSiteField('${id}','${field}',this.value)" onkeydown="if(event.key==='Enter')this.blur()" `
+    + `style="width:${w}px;padding:5px;background:#0f1729;color:#e5e7eb;border:1px solid var(--border);border-radius:5px;font-size:11px;${extra || ''}">`;
+  tb.innerHTML = _rsCache.map((s) => {
+    const online = s.online ? '<span style="color:#34d399">●</span> online' : '<span style="color:#f87171">●</span> offline';
+    const portOn = s.enabled !== false;
+    const url = `${s.tls ? 'https:' : location.protocol}//${location.hostname}:${s.listenPort}/`;
+    return `<tr>
+      <td>${inp(s.id, 'name', s.name || '', 90)}</td>
+      <td>${inp(s.id, 'host', s.host || '', 130, 'font-family:monospace')}</td>
+      <td style="white-space:nowrap">
+        ${inp(s.id, 'listenPort', s.listenPort, 64, 'text-align:center;font-weight:700;background:#0b2a18;color:#86efac;border-color:#166534')}
+        <span style="color:#60a5fa;font-weight:700"> → </span>
+        ${inp(s.id, 'port', s.port, 60, 'text-align:center')}
+      </td>
+      <td style="font-size:11px">${online} · ${portOn ? '<span style="color:#60a5fa">▶ พอร์ตเปิด</span>' : '<span style="color:var(--dim)">■ พอร์ตปิด</span>'}</td>
+      <td style="white-space:nowrap">
+        <button onclick="toggleRemoteSite('${s.id}',${!portOn})" title="${portOn ? 'ปิดพอร์ต (หยุด forward)' : 'เปิดพอร์ต (เริ่ม forward)'}" style="background:${portOn ? '#166534' : '#374151'};color:#fff;border:0;border-radius:5px;padding:5px 9px;font-size:11px;cursor:pointer">${portOn ? '⏻ ปิดพอร์ต' : '▶ เปิดพอร์ต'}</button>
+        <button onclick="window.open('${url}','_blank')" ${portOn && s.online ? '' : 'disabled'} title="เปิด serverB เต็มจอ (แท็บใหม่)" style="background:#2563eb;color:#fff;border:0;border-radius:5px;padding:5px 10px;font-size:11px;cursor:pointer;${portOn && s.online ? '' : 'opacity:.4'}">↗ open link</button>
+        <button onclick="deleteRemoteSite('${s.id}','${esc(s.name || s.id)}')" title="ลบ site" style="background:#7f1d1d;color:#fff;border:0;border-radius:5px;padding:5px 9px;font-size:11px;cursor:pointer">🗑</button>
+      </td></tr>`;
+  }).join('');
+}
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+// fetch + แปลง response เป็น JSON · ถ้าไม่ใช่ JSON / ไม่ ok → throw error อ่านรู้เรื่อง (โชว์ status + เนื้อหา)
+function rsApi(url, method, body) {
+  return fetch(gatedUrl(url), { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .then((r) => r.text().then((t) => {
+      let d; try { d = JSON.parse(t); } catch (_) { throw new Error('HTTP ' + r.status + ' (ไม่ใช่ JSON): ' + (t || '(ว่าง)').slice(0, 70)); }
+      if (!d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+      return d;
+    }));
+}
+// แก้ค่าทีละช่องในตาราง → PUT ทันที (host/name/listenPort/port)
+function updateSiteField(id, field, value) {
+  const body = {};
+  if (field === 'listenPort' || field === 'port') {
+    const v = parseInt(value, 10);
+    if (!v || v < 1 || v > 65535) { rsMsg('✗ พอร์ตต้องเป็น 1–65535'); loadRemoteSites(); return; }
+    body[field] = v;
+  } else {
+    body[field] = String(value).trim();
+    if (field === 'host' && !body.host) { rsMsg('✗ IP serverB ห้ามว่าง'); loadRemoteSites(); return; }
+  }
+  rsMsg('กำลังบันทึก…');
+  rsApi('/api/remote-sites/' + encodeURIComponent(id), 'PUT', body)
+    .then(() => { rsMsg('✓ บันทึกแล้ว'); loadRemoteSites(); })
+    .catch((e) => { rsMsg('✗ ' + (e.message || 'เชื่อมต่อ Manager ไม่ได้')); loadRemoteSites(); });
+}
+// เพิ่ม site ใหม่ (POST) — เพิ่มเสร็จเคลียร์ฟอร์ม + โฟกัสช่อง IP พร้อมเพิ่มตัวถัดไปเรื่อยๆ
+function saveRemoteSite() {
+  const body = {
+    name: document.getElementById('rs-name').value.trim(),
+    host: document.getElementById('rs-host').value.trim(),
+    port: parseInt(document.getElementById('rs-port').value, 10) || 3012,
+    listenPort: parseInt(document.getElementById('rs-listen').value, 10),
+  };
+  if (!body.host || !body.listenPort) { rsMsg('✗ ต้องใส่ IP serverB + พอร์ตต้นทาง'); return; }
+  rsMsg('กำลังเพิ่ม…');
+  rsApi('/api/remote-sites', 'POST', body)
+    .then(() => {
+      rsMsg('✓ เพิ่มแล้ว — เพิ่มตัวถัดไปได้เลย');
+      document.getElementById('rs-name').value = '';
+      document.getElementById('rs-host').value = '';
+      document.getElementById('rs-listen').value = '';
+      document.getElementById('rs-port').value = '3012';
+      document.getElementById('rs-host').focus();
+      loadRemoteSites();
+    })
+    .catch((e) => rsMsg('✗ ' + (e.message || 'เชื่อมต่อ Manager ไม่ได้')));
+}
+function toggleRemoteSite(id, enabled) {
+  fetch(gatedUrl('/api/remote-sites/' + encodeURIComponent(id)), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
+    .then(r => r.json()).then(() => loadRemoteSites()).catch(() => {});
+}
+function deleteRemoteSite(id, name) {
+  kpeConfirm({
+    icon: '🗑', title: 'ลบ Remote Site', confirmText: 'ลบ',
+    message: 'ลบ site "' + name + '"?\n(หยุด tunnel · ไม่กระทบ serverB)',
+    onYes: () => {
+      fetch(gatedUrl('/api/remote-sites/' + encodeURIComponent(id)), { method: 'DELETE' })
+        .then(r => r.json()).then(() => { rsMsg('✓ ลบแล้ว'); loadRemoteSites(); }).catch(() => {});
+    }
+  });
+}
+
+// ── Embed Proxy allowlist (โดเมนที่อนุญาตฝังผ่าน /embed-proxy) ──────────────
+let _embedAllow = [];
+function epMsg(m) { const e = document.getElementById('ep-msg'); if (e) e.textContent = m; }
+function loadEmbedAllow() {
+  fetch(gatedUrl('/api/embed-proxy')).then(r => r.json()).then(d => { _embedAllow = d.allow || []; renderEmbedAllow(); }).catch(() => {});
+}
+function renderEmbedAllow() {
+  const box = document.getElementById('embed-list'); if (!box) return;
+  if (!_embedAllow.length) { box.innerHTML = '<span style="color:var(--dim);font-size:12px">— ยังไม่มีโดเมน (Web Embed โหมด proxy จะใช้ไม่ได้จนกว่าจะเพิ่ม) —</span>'; return; }
+  box.innerHTML = _embedAllow.map((d) => `<span style="display:inline-flex;align-items:center;gap:6px;background:#0b2a18;border:1px solid #166534;color:#86efac;border-radius:14px;padding:4px 10px;font-size:12px;font-family:monospace">${d.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}<span onclick="removeEmbedDomain('${d}')" title="ลบ" style="cursor:pointer;color:#f87171;font-weight:700">✕</span></span>`).join('');
+}
+function saveEmbedAllow() {
+  epMsg('กำลังบันทึก…');
+  fetch(gatedUrl('/api/embed-proxy'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ allow: _embedAllow }) })
+    .then(r => r.json()).then(d => { if (d.ok) { _embedAllow = d.allow || []; renderEmbedAllow(); epMsg('✓ บันทึกแล้ว'); } else epMsg('✗ ' + (d.error || 'ผิดพลาด')); })
+    .catch(() => epMsg('✗ เชื่อมต่อ Manager ไม่ได้'));
+}
+function addEmbedDomain() {
+  const inp = document.getElementById('ep-domain');
+  const d = (inp.value || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/:\d+$/, '');
+  if (!d) { epMsg('✗ ใส่โดเมน'); return; }
+  if (_embedAllow.includes(d)) { epMsg('มีอยู่แล้ว'); return; }
+  _embedAllow.push(d); inp.value = ''; saveEmbedAllow();
+}
+function removeEmbedDomain(d) {
+  _embedAllow = _embedAllow.filter((x) => x !== d); saveEmbedAllow();
+}
+
+// แสดงเวอร์ชันแอปบน header (จาก version.json · stamp อัตโนมัติทุก commit)
+function applyVersion(v) {
+  const el = document.getElementById('mgr-version');
+  if (!el) return;
+  if (!v || typeof v !== 'object') { el.textContent = ''; el.style.display = 'none'; return; }
+  const parts = [];
+  if (v.version) parts.push(v.version);   // 4 หลักเต็ม เช่น 0.2.6.3
+  if (v.date)    parts.push(v.date);
+  el.textContent = parts.join(' · ');
+  el.title = 'เวอร์ชันแอป' + (v.commit ? ' · ' + v.commit : '') + ' (stamp อัตโนมัติทุก commit)';
+  el.style.display = parts.length ? '' : 'none';
+}
+
+// ── Initial load ──────────────────────────────────────────────────
+fetch('/api/status').then(r => r.json()).then(data => {
+  applyPorts(data.config);   // ตั้ง label/link/form ตามพอร์ตจริงก่อน
+  renderLanUrls(data.lanIps, data.config);   // URL สำหรับเปิดจากเครื่องอื่นใน LAN
+  applyVersion(data.version);
+  for (const [name, s] of Object.entries(data)) {
+    if (name === 'ports' || name === 'config' || name === 'lanIps' || name === 'version') continue;
+    setProc(name, s.running);
+    s.logs?.forEach(l => appendLog(name, l.line));
+  }
+  if (data.ports) {
+    for (const [port, state] of Object.entries(data.ports)) {
+      updatePort(Number(port), state.open, state.pids);
+    }
+  }
+});
+
+// ── SSE ───────────────────────────────────────────────────────────
+let sse;
+function connectSSE() {
+  sse = new EventSource(gatedUrl('/api/events'));
+
+  sse.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'log')  appendLog(msg.name, msg.line);
+    if (msg.type === 'proc') setProc(msg.name, msg.running);
+    if (msg.type === 'port') updatePort(msg.port, msg.open, msg.pids);
+    if (msg.type === 'ports_snapshot') {
+      for (const [port, state] of Object.entries(msg.ports)) {
+        updatePort(Number(port), state.open, state.pids);
+      }
+    }
+    if (msg.type === 'install') appendReqLog(`[${msg.tool}] ${msg.line}`);
+    if (msg.type === 'install_done') {
+      if (reqRows[msg.tool]) reqRows[msg.tool]._installing = false;
+      renderReqTable();
+    }
+    if (msg.type === 'requirement') {   // อัปเดตเวอร์ชันใหม่หลังติดตั้ง
+      reqRows[msg.tool] = { ...reqRows[msg.tool], ...msg, _installing: false };
+      delete reqRows[msg.tool].type;
+      renderReqTable();
+    }
+  };
+
+  sse.onerror = () => {
+    setTimeout(connectSSE, 3000); // reconnect
+  };
+}
+connectSSE();
+
+// ── Load system requirements on startup ───────────────────────────
+loadRequirements();
+
+// ── Start / Stop service ──────────────────────────────────────────
+async function startSvc(name) {
+  document.getElementById('btn-start-' + name).disabled = true;
+  const r = await fetch('/api/' + name + '/start', { method: 'POST' }).then(r => r.json());
+  if (!r.ok) document.getElementById('btn-start-' + name).disabled = false;
+}
+async function stopSvc(name) {
+  document.getElementById('btn-stop-' + name).disabled = true;
+  await fetch('/api/' + name + '/stop', { method: 'POST' });
+}
+
+// ── System Requirements ───────────────────────────────────────────
+const reqRows = {};   // tool → latest detection object
+const PLATFORM_LABEL = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' };
+
+function reqStatusBadge(status) {
+  if (status === 'ok')       return '<span style="color:#4ade80;font-weight:700">✓ OK</span>';
+  if (status === 'outdated') return '<span style="color:#f59e0b;font-weight:700">⚠ เก่าเกินไป</span>';
+  if (status === 'missing')  return '<span style="color:#f87171;font-weight:700">✗ ยังไม่ติดตั้ง</span>';
+  return '<span style="color:var(--dim)">? ไม่ทราบ</span>';
+}
+
+function renderReqTable() {
+  const tbody = document.getElementById('req-table-body');
+  const tools = Object.values(reqRows);
+  if (!tools.length) return;
+  tbody.innerHTML = tools.map(d => {
+    const installing = d._installing;
+    const actionLabel = installing ? '⏳ กำลังติดตั้ง…'
+        : d.status === 'ok' ? '↑ อัปเดต'
+        : d.status === 'missing' ? '⬇ ติดตั้ง' : '↑ อัปเดต/ซ่อม';
+    const btnColor = d.status === 'ok' ? 'var(--border)' : '#166534';
+    const btnTextColor = d.status === 'ok' ? 'var(--text)' : '#4ade80';
+    const disabled = installing;
+    const ver = d.version ? `<span style="font-family:monospace;color:${d.status==='ok'?'#4ade80':'#f59e0b'}">v${d.version}</span>`
+                          : '<span style="color:var(--dim)">—</span>';
+    return `<tr>
+      <td><strong>${d.label}</strong><div style="font-size:10px;color:var(--dim)">${d.desc||''}</div></td>
+      <td>${reqStatusBadge(d.status)}</td>
+      <td>${ver}</td>
+      <td><span style="font-family:monospace;color:var(--dim)">≥ ${d.min}</span></td>
+      <td><button class="kill-btn-sm" style="background:${btnColor};color:${btnTextColor}"
+            ${disabled?'disabled':''} onclick="installReq('${d.tool}')">${actionLabel}</button></td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadRequirements() {
+  const btn = document.getElementById('req-refresh');
+  if (btn) btn.disabled = true;
+  try {
+    const data = await fetch('/api/requirements').then(r => r.json());
+    document.getElementById('req-platform').textContent = PLATFORM_LABEL[data.platform] || data.platform;
+    data.list.forEach(d => { reqRows[d.tool] = { ...reqRows[d.tool], ...d }; });
+    renderReqTable();
+  } catch (e) {
+    document.getElementById('req-table-body').innerHTML =
+      `<tr><td colspan="5" style="color:#f87171;text-align:center;padding:16px">ตรวจสอบไม่สำเร็จ: ${e.message}</td></tr>`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function installReq(tool) {
+  const row = reqRows[tool];
+  if (!row || row._installing) return;
+  kpeConfirm({
+    icon: '⚙️', title: 'ติดตั้ง/อัปเดต', confirmText: 'ติดตั้ง', danger: false,
+    message: `ติดตั้ง/อัปเดต ${row.label}?\n\nระบบจะรันคำสั่งติดตั้งบนเครื่องนี้ (${PLATFORM_LABEL[reqRows[tool]?.platform] || ''})\nดู log ได้ในกล่อง INSTALL OUTPUT`,
+    onYes: async () => {
+      row._installing = true;
+      renderReqTable();
+      // เปิด log box อัตโนมัติ
+      const box = document.getElementById('log-req');
+      if (!box.classList.contains('open')) toggleReqLog();
+      appendReqLog(`── เริ่มติดตั้ง ${row.label} ──`);
+      const r = await fetch(`/api/requirements/${tool}/install`, { method: 'POST' }).then(r => r.json());
+      if (!r.ok && r.msg) { appendReqLog('⚠ ' + r.msg); row._installing = false; renderReqTable(); }
+    }
+  });
+}
+
+function appendReqLog(line) {
+  const box = document.getElementById('log-req');
+  if (!box) return;
+  const div = document.createElement('div');
+  div.className = 'log-line';
+  div.textContent = `[${new Date().toLocaleTimeString('th-TH')}] ${line}`;
+  box.appendChild(div);
+  if (box.children.length > 400) box.removeChild(box.firstChild);
+  box.scrollTop = box.scrollHeight;
+}
+
+function toggleReqLog() {
+  const box = document.getElementById('log-req');
+  const tog = document.getElementById('lt-req');
+  const open = box.classList.toggle('open');
+  tog.textContent = open ? '▲ hide' : '▼ show';
+}
+
+// ── Kill port ─────────────────────────────────────────────────────
+async function killPort(port, name) {
+  const portStr = `port ${port}`;
+  kpeConfirm({
+    icon: '⚡', title: 'Kill port', confirmText: 'Kill',
+    message: `Kill all processes on ${portStr}?`,
+    onYes: async () => {
+      try {
+        const r = await fetch(`/api/port/${port}/kill`, { method: 'POST' }).then(r => r.json());
+        if (r.ok) {
+          appendLog(name || 'backend',
+            `⚡ Killed ${r.killed} process(es) on port ${port} (PIDs: ${r.pids.join(', ')})`);
+        }
+      } catch (e) {
+        kpeConfirm({ icon: '✗', title: 'Kill failed', danger: true, alert: true, confirmText: 'ปิด', message: 'Kill failed: ' + e.message });
+      }
+    }
+  });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "config": {
+    "dbConnection": "",
+    "dbTable": "device_log",
+    "journalLimit": 500
+  }
+}
