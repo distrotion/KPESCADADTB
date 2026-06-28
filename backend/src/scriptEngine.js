@@ -280,6 +280,7 @@ class ScriptEngine {
       case 'buffer.data':    return this.queryBufferManager ? this.queryBufferManager.data(args[0]) : null;
       case 'buffer.refresh': return this.queryBufferManager ? this.queryBufferManager.refresh(args[0]) : Promise.reject(new Error('No query buffer'));
       case 'buffer.list':    return this.queryBufferManager ? this.queryBufferManager.list() : [];
+      case 'buffer.write':   return this.queryBufferManager ? this.queryBufferManager.writeFromScript(args[0], args[1], args[2]) : Promise.reject(new Error('No query buffer'));
       default: return Promise.reject(new Error('unknown rpc: ' + fn));
     }
   }
@@ -471,11 +472,13 @@ class ScriptEngine {
       //   buffer.rows('id')   → array ของแถว (สั้น)
       //   buffer.refresh('id')→ await รัน query เดี๋ยวนี้ → ผลใหม่
       //   buffer.list()       → [{id,name,...}]
+      //   buffer.write(name, rows[, {maxRows}]) → เขียนผลลง buffer (kind 'push' · auto-create) → widget อ้าง ?buffer=<id>
       buffer: (() => {
         const f = (id) => self.queryBufferManager ? self.queryBufferManager.data(id) : null;
         f.rows = (id) => (self.queryBufferManager ? (self.queryBufferManager.data(id).rows || []) : []);
         f.refresh = (id) => self.queryBufferManager ? self.queryBufferManager.refresh(id) : Promise.reject(new Error('No query buffer'));
         f.list = () => self.queryBufferManager ? self.queryBufferManager.list() : [];
+        f.write = (name, rows, opts) => self.queryBufferManager ? self.queryBufferManager.writeFromScript(name, rows, opts) : null;
         return f;
       })(),
 
