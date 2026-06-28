@@ -73,7 +73,7 @@ class QueryBufferManager {
     return {
       id: b.id,
       name: String(b.name || '').trim(),
-      kind: ['rest', 'mongo', 'push'].includes(b.kind) ? b.kind : 'sql',   // sql | rest (HTTP JSON) | mongo | push (script เขียนผ่าน buffer.write)
+      kind: ['rest', 'mongo'].includes(b.kind) ? b.kind : 'sql',   // sql | rest (HTTP JSON) | mongo
       dbConn: String(b.dbConn || '').trim(),
       sql: String(b.sql || ''),
       // Mongo mode
@@ -249,7 +249,6 @@ class QueryBufferManager {
   async refresh(id) {
     const b = this.get(id);
     if (!b) return { ok: false, error: 'not found' };
-    if (b.kind === 'push') return this.data(id, true);   // push = ไม่มี source · คงข้อมูลที่ script เขียนไว้ (ไม่ดึงใหม่)
     try {
       const { columns, rows } = this._shape(await this._execute(b), b.maxRows);
       const payload = { ok: true, columns, rows, lastRun: Date.now(), rowCount: rows.length };
@@ -261,28 +260,6 @@ class QueryBufferManager {
       b.lastError = e.message; b.lastRun = Date.now(); this._save();
       return { ok: false, error: e.message };
     }
-  }
-
-  // ── script เขียนผลลง buffer (kind 'push') — buffer.write จาก Script Automation ──
-  //   auto-create ถ้ายังไม่มี (ตามชื่อ) → widget อ้าง ?buffer=<id> ได้ทันที · trigger คุมฝั่ง script
-  //   rows = array ของ object (1 แถว/ตัว) · opts.maxRows ตั้งเพดานตอนสร้างใหม่
-  writeFromScript(name, rows, opts = {}) {
-    const nm = String(name || '').trim();
-    if (!nm) throw new Error('buffer.write: ต้องระบุชื่อ buffer');
-    let b = this.get(nm) || this.buffers.find((x) => x.name.toLowerCase() === nm.toLowerCase());
-    if (b && b.kind !== 'push') throw new Error(`buffer "${nm}" มีอยู่แล้ว (kind=${b.kind}) — เขียนทับด้วย buffer.write ไม่ได้`);
-    if (!b) {
-      const maxRows = clampInt(opts.maxRows, 1, 100000, DEFAULT_MAXROWS);
-      b = this._norm({ id: this._genId(nm), name: nm, kind: 'push', intervalSec: 0, maxRows, enabled: true });
-      this.buffers.push(b);
-      if (this._started) this._arm(b);   // push: intervalSec 0 → _arm ไม่ตั้ง timer
-    }
-    const { columns, rows: shaped } = this._shape(rows, b.maxRows);
-    const payload = { ok: true, columns, rows: shaped, lastRun: Date.now(), rowCount: shaped.length };
-    csv.writeJsonAtomic(this._dataFile(b.id), payload);
-    b.lastRun = payload.lastRun; b.lastError = null; b.rowCount = shaped.length;
-    this._save();
-    return { ok: true, id: b.id, name: b.name, rowCount: shaped.length };
   }
 
   // ── ทดสอบยิง (ไม่บันทึกนิยาม/ไม่เก็บผล) — สำหรับปุ่ม "ทดสอบ" ในฟอร์มสร้าง buffer ──

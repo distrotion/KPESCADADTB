@@ -130,7 +130,6 @@ function buildContext() {
       f.rows = async (id) => ((await rpc('buffer.data', [id]))?.rows || []);
       f.refresh = (id) => rpc('buffer.refresh', [id]);
       f.list = () => rpc('buffer.list', []);
-      f.write = (name, rows, opts) => rpc('buffer.write', [name, rows, opts]);
       return f;
     })(),
 
