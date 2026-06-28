@@ -97,6 +97,7 @@ class DatalogManager {
     return {
       id: String(d.id || ''),
       name: String(d.name || '').trim(),
+      group: String(d.group || '').trim(),   // กลุ่มจัดระเบียบ (ผู้ใช้ตั้งเอง · ว่าง = "ทั่วไป" ฝั่ง UI) — ไม่กระทบ logic การ log
       series,
       storage,
       dbConn,
