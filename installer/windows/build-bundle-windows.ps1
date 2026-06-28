@@ -9,8 +9,10 @@
 #     # ที่ frontend: flutter build web --no-web-resources-cdn  (ต้องมี build\web)
 #     powershell -ExecutionPolicy Bypass -File build-bundle-windows.ps1
 #     ... -NoNode                 # ไม่รวม Node (ปลายทางมี node >=18 อยู่แล้ว)
-#     ... -NodeVersion v20.18.1
-param([switch]$NoNode, [string]$NodeVersion = 'v20.18.1', [string]$OutDir)
+#     ... -NodeVersion v22.18.0
+#   ⚠️ Node default = v22.18.0 → มี node:sqlite built-in (flag-free 22.13+) = SQLite ใช้ได้โดยไม่ต้อง native dep
+#      (Node <22.5 ไม่มี node:sqlite → SQLite ถูกซ่อนใน UI เว้นแต่ติดตั้ง better-sqlite3 เอง)
+param([switch]$NoNode, [string]$NodeVersion = 'v22.18.0', [string]$OutDir)
 $ErrorActionPreference = 'Stop'
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path

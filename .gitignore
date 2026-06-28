@@ -4,11 +4,10 @@ node_modules/
 /config/
 /layout/
 /datalog/
+/data/
 /ports.json
 /manager/api-token.json
 /manager/access-gate.json
 /manager/branding.json
 **/license.key
 *.pem
-
-/data/
