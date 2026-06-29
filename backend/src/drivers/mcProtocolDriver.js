@@ -83,8 +83,16 @@ class MCProtocolDriver {
     return this._connecting;
   }
 
-  // ส่ง request → คืน response buffer เต็ม (>=11 byte) หรือ null — รองรับทั้ง TCP/UDP
+  // ส่ง request → คืน response buffer เต็ม หรือ null — รองรับทั้ง TCP/UDP
+  // ⚠️ serialize ทุกคำสั่งบน socket เดียว: MC 3E ไม่มี transaction ID จับคู่ req↔resp
+  //    ถ้า read (poll) กับ write (set) ซ้อนกัน → response 2 คำสั่งปนกัน = ค่าหลาย tag มั่ว/สลับ
   _transact(request) {
+    const run = () => this._transactRaw(request);
+    this._txChain = (this._txChain || Promise.resolve()).then(run, run);
+    return this._txChain;
+  }
+
+  _transactRaw(request) {
     return new Promise((resolve) => {
       const sock = this.socket;
       if (!sock) return resolve(null);
@@ -98,14 +106,20 @@ class MCProtocolDriver {
         });
       } else {
         let buf = Buffer.alloc(0);
+        const done = (val) => { clearTimeout(t); sock.removeListener('data', onData); resolve(val); };
         const onData = (data) => {
           buf = Buffer.concat([buf, data]);
-          if (buf.length >= 11) { clearTimeout(t); sock.removeListener('data', onData); resolve(buf); }
+          // 3E response: byte 7-8 (LE) = ความยาว data นับจาก end code → เฟรมเต็ม = 9 + dataLen
+          // อ่านจนครบเฟรม (ไม่ resolve ตั้งแต่ 11 byte) เพื่อกัน data ที่มาช้าตกค้างไปปนคำสั่งถัดไป
+          if (buf.length >= 9) {
+            const need = 9 + buf.readUInt16LE(7);
+            if (buf.length >= need) done(buf.slice(0, need));
+          }
         };
         sock.on('data', onData);
-        const t = setTimeout(() => { sock.removeListener('data', onData); resolve(null); }, 3000);
+        const t = setTimeout(() => { sock.removeListener('data', onData); resolve(buf.length >= 11 ? buf : null); }, 3000);
         sock.write(request, (err) => {
-          if (err) { clearTimeout(t); sock.removeListener('data', onData); resolve(null); }
+          if (err) done(null);
         });
       }
     });

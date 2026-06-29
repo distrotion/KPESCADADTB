@@ -340,7 +340,11 @@ class OmronFinsDriver {
 
   _sendFins(mainCode, subCode, data) {
     const frame = this._buildFinsCommand(mainCode, subCode, data);
-    return this.transport === 'tcp' ? this._sendFinsTcp(frame) : this._sendFinsUdp(frame);
+    // ⚠️ serialize ทุกคำสั่งบน socket เดียว: โค้ดนี้คืน response เฟรมแรกที่ครบ (ไม่จับคู่ SID)
+    //    ถ้า read (poll) กับ write (set) ซ้อนกัน → response 2 คำสั่งปนกัน = ค่าหลาย tag มั่ว (เหมือน MC)
+    const run = () => (this.transport === 'tcp' ? this._sendFinsTcp(frame) : this._sendFinsUdp(frame));
+    this._txChain = (this._txChain || Promise.resolve()).then(run, run);
+    return this._txChain;
   }
 
   // FINS/UDP — ส่ง datagram, รอ message ตอบกลับ
