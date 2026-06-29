@@ -65,7 +65,8 @@ class CarrierTracker {
   //   ov.c = content (carrier→{inTime,params}) · ov.li/ov.lo = ค่า in/out ล่าสุด (diff)
   _oven(st, p, pos, pset, cfg, now, events, mk, laneOf, lastBySet) {
     const stn = String(p.station);
-    const ov = st.oven[stn] || (st.oven[stn] = { c: {}, li: null, lo: null });
+    const ov = st.oven[stn] || (st.oven[stn] = { c: {}, li: null, lo: null, params: {} });
+    ov.params = _latch(ov.params || {}, p.params);   // อุณหภูมิเตา "สด" ทุก poll (latch ค่าล่าสุดที่ ≠ 0) → monitor โชว์ live
     const valid = (v) => !(v === null || v === undefined || v === '' || !Number.isFinite(Number(v)));   // null=comms loss → คงสถานะ
     // เข้า oven (inTag เปลี่ยนเป็นเลขใหม่ที่ยังไม่อยู่ในเตา)
     if (valid(p.inId)) {
