@@ -44,6 +44,10 @@ function mountLineRecorder(app, manager) {
   app.post('/api/line-recorder/lines/:line/comment', async (req, res) => {
     try { res.json(await manager.setComment(req.params.line, req.body || {})); } catch (e) { se(res, e); }
   });
+  // ยกเลิกมือ — carrier ค้างในเตา (เข้าเตาแต่ไม่มีเลขออก) → บันทึก manual cancel — body { station, carrier }
+  app.post('/api/line-recorder/lines/:line/oven-cancel', async (req, res) => {
+    try { const b = req.body || {}; res.json(await manager.cancelOven(req.params.line, b.station, b.carrier)); } catch (e) { se(res, e); }
+  });
 
   app.get('/api/line-recorder/jobs', async (req, res) => {
     try { res.json({ ok: true, jobs: await manager.jobs({ line: req.query.line || null, dateKey: req.query.date || null, status: req.query.status || null, q: req.query.q || null, from: req.query.from ? Number(req.query.from) : null, to: req.query.to ? Number(req.query.to) : null, limit: Number(req.query.limit) || 200 }) }); } catch (e) { se(res, e); }

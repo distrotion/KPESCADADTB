@@ -229,6 +229,35 @@ class LineRecorderManager {
     return res;
   }
 
+  // ยกเลิกมือจาก monitor — carrier ที่ค้างในเตา (เข้าเตาแต่ไม่มีเลขออก) → EXIT(cancel) บันทึกเป็น "manual cancel" + ลบจากเตา
+  async cancelOven(line, station, carrier) {
+    const cfg = this.configs[line];
+    if (!cfg) throw new Error('ไม่พบไลน์');
+    if (this.owned[line] === false) throw new Error('เครื่องนี้เป็น viewer — ยกเลิกได้เฉพาะเครื่อง recorder');
+    const st = this.tracker.state[line] || {};
+    const stn = String(station);
+    const cr = String(carrier);
+    const ov = st.oven && st.oven[stn];
+    const rec = (ov && ov.c) ? ov.c[cr] : null;
+    const ctx = this.tracker._findCtxByCarrier(st, Number(cr)) || null;
+    const now = Date.now();
+    const sc = (cfg.stations || {})[stn] || {};
+    const ev = {
+      line, type: 'EXIT', carrier: cr, lane: (ctx && ctx.lane) || '',
+      dateKey: (ctx && ctx.dateKey) || '', set: ctx ? ctx.set : null, run: (ctx && ctx.run != null) ? ctx.run : null,
+      station: stn, stationName: sc.name || '', stationType: sc.type || 'oven', seq: sc.seq != null ? Number(sc.seq) : null,
+      enterTs: rec ? rec.inTime : (ctx ? ctx.enterTs : null), exitTs: now,
+      dwell: (rec && rec.inTime) ? Math.round((now - rec.inTime) / 1000) : null,
+      values: rec ? rec.params : (ctx && ctx.lastParams ? ctx.lastParams : {}),
+      complete: true, cancel: true, ts: now,
+    };
+    const res = await this.projectEvent(ev);
+    if (ov && ov.c) delete ov.c[cr];                                  // ออกจากเตา (monitor หยุดโชว์)
+    if (ctx) { for (const k of Object.keys(st.jobs || {})) { if (st.jobs[k] === ctx) delete st.jobs[k]; } }
+    try { await this._storeFor(cfg).saveRegister(line, st); } catch (_) {}
+    return { ok: true, jobKey: res.jobKey };
+  }
+
   listLines() { return Object.values(this.configs).map((c) => ({ line: c.line, label: c.label, enabled: c.enabled, stations: Object.keys(c.stations).length, fields: c.fields.length, editable: true })); }
   getConfig(line) { return this.configs[line] || null; }
   maxLines() { try { return this._licenseMaxLines ? this._licenseMaxLines() : 9999; } catch (_) { return 9999; } }   // DLClr limit (9999 = ไม่จำกัด/dev)

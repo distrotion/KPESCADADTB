@@ -67,7 +67,8 @@ class LineEngine {
       }
     }
     // EXIT 2 ระดับ: ออกบ่อสุดท้าย/finish = 'done' (ขาออก) · idle-timeout (ev.complete) = 'complete' (หายจากไลน์ = จบสมบูรณ์)
-    if (ev.type === 'EXIT') { jobPatch.status = ev.complete ? 'complete' : 'done'; jobPatch.exitAt = ts; }
+    // EXIT: cancel (ยกเลิกมือจาก monitor · เช่น เข้าเตาแต่ไม่มีเลขออก) > complete (idle) > done (ขาออก)
+    if (ev.type === 'EXIT') { jobPatch.status = ev.cancel ? 'cancel' : (ev.complete ? 'complete' : 'done'); jobPatch.exitAt = ts; if (ev.cancel) jobPatch.cancel = true; }
     const job = await store.upsertJob(jobPatch);
 
     let step = null; let violations = [];
