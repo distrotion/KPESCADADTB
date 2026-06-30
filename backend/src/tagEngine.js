@@ -29,6 +29,7 @@ class TagEngine {
     this.simStore  = new Map(); // buffer data (หน่วยความจำจำลองของ device ตอน sim mode) — "deviceId:tagId" -> value
     this.intervals = new Map();
     this.alarms = [];
+    this.lineRecorder = null;   // LR manager (wire จาก server.js) — device type 'lr' อ่าน job field ผ่านตัวนี้
     this._loadConfig();
   }
 
@@ -139,6 +140,10 @@ class TagEngine {
       return; // ไม่มี driver / polling
     }
 
+    // ── Line Recorder device (type 'lr') — tag = job field (เช่น barcode) ของ LR ──
+    //   ไม่มี driver จริง · poll: resolve jobKey (จาก ref tag) → อ่าน field ใน job.data → tag set · read-only
+    if (device.type === 'lr') { this._initLrDevice(device); return; }
+
     let driver;
     switch (device.type) {
       case 'modbus_tcp':
@@ -243,6 +248,80 @@ class TagEngine {
     const interval = setInterval(pollFn, device.pollInterval || 1000);
     this.intervals.set(device.id, interval);
     pollFn(); // เริ่มรอบแรกทันที (ไม่ await — ไม่ block startup)
+  }
+
+  // ── Line Recorder device (type 'lr') ────────────────────────────────────────
+  /** wire LR manager จาก server.js (หลังสร้าง tagEngine + lineRecorder แล้ว) */
+  setLineRecorder(mgr) { this.lineRecorder = mgr || null; }
+
+  _initLrDevice(device) {
+    const self = this;
+    // sentinel driver (ไม่ต่อจริง) — ให้ teardown/disconnect + _deviceConnected ทำงานเหมือน driver อื่น
+    //   connected = true เมื่อ wire LR manager แล้ว (ใช้กับ __online)
+    const lrDriver = { lr: true, get connected() { return !!self.lineRecorder; }, disconnect() {} };
+    this.drivers.set(device.id, lrDriver);
+    let polling = false;
+    const pollFn = async () => {
+      if (polling) return;
+      if (this.drivers.get(device.id) !== lrDriver) return;   // ถูก reinit/ถอด → หยุด
+      polling = true;
+      try {
+        for (const tag of device.tags) {
+          const { value, quality } = await this._readLrTag(device, tag);
+          this._setTagValue(device.id, tag.id, value, quality);
+          if (quality === 'good') device._lastGoodRead = Date.now();
+        }
+      } finally { polling = false; }
+    };
+    const interval = setInterval(pollFn, device.pollInterval || 1000);
+    this.intervals.set(device.id, interval);
+    pollFn();   // รอบแรกทันที (ไม่ block)
+  }
+
+  /** อ่านค่า tag ของ lr-device: resolve job (carrier/jobKey จาก ref tag) → field ใน job.data */
+  async _readLrTag(device, tag) {
+    const mgr = this.lineRecorder;
+    if (!mgr) return { value: null, quality: 'unknown' };   // ยังไม่ wire
+    const cfg = tag.lr || {};
+    const out = String(cfg.out || '');
+    if (!out) return { value: null, quality: 'bad' };
+    // ค่า ref tag (ตัวให้ค่า carrier / jobKey)
+    let ref = null;
+    if (cfg.refDev && cfg.refTag) {
+      const rv = this.tagValues.get(`${cfg.refDev}:${cfg.refTag}`);
+      ref = rv ? rv.value : null;
+    }
+    if (ref == null || ref === '') return { value: null, quality: 'bad' };
+    const refStr = String(ref);
+    let job = null;
+    try {
+      if (cfg.src === 'jobKey') {
+        job = await mgr.job(refStr);                 // line มาจาก jobKey เอง
+      } else {                                       // 'carrier' (default)
+        const line = String(cfg.line || '');
+        if (!line) return { value: null, quality: 'bad' };
+        const list = await mgr.jobs({ line, field: 'carrier', value: refStr, limit: 1 });   // newest-first
+        job = Array.isArray(list) && list.length ? list[0] : null;
+      }
+    } catch (_) { return { value: null, quality: 'bad' }; }
+    if (!job) return { value: null, quality: 'bad' };
+    // field จากหัวข้อมูลงาน: data ก่อน → header (job เก่า) → anchor บน job เอง
+    let raw;
+    if (job.data && Object.prototype.hasOwnProperty.call(job.data, out)) raw = job.data[out];
+    else if (job.header && Object.prototype.hasOwnProperty.call(job.header, out)) raw = job.header[out];
+    else if (Object.prototype.hasOwnProperty.call(job, out)) raw = job[out];
+    if (raw === undefined || raw === null) return { value: null, quality: 'bad' };
+    return { value: this._castLr(raw, tag.dataType), quality: 'good' };
+  }
+
+  /** cast ค่า field ตาม dataType ปลายทาง (barcode = STRING) */
+  _castLr(raw, dataType) {
+    const t = String(dataType || '').toUpperCase();
+    if (t === 'STRING' || t === 'TEXT') return String(raw);
+    if (t.includes('BOOL')) return raw ? 1 : 0;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return t === 'INT' || t.includes('INT') ? 0 : String(raw);
+    return (t.includes('FLOAT') || t.includes('REAL') || t.includes('DOUBLE')) ? n : Math.trunc(n);
   }
 
   // ── Auto-probe: ลอง connection มาตรฐานต่าง ๆ เมื่อต่อไม่ติด (เปิดด้วย device.autoProbe) ──
@@ -523,6 +602,10 @@ class TagEngine {
     // INDEX = read-only v1 (indexed addressing · เขียนผ่าน pointer = v2)
     if (String(tag.dataType || '').toUpperCase() === 'INDEX') {
       throw new Error(`INDEX (pointer) เป็น read-only — เขียนไม่ได้: ${tagRef}`);
+    }
+    // Line Recorder device (mirror job field) = read-only — ห้ามเขียน
+    if (device.type === 'lr') {
+      throw new Error(`Line Recorder tag (mirror job field) เป็น read-only — เขียนไม่ได้: ${tagRef}`);
     }
 
     const sim    = this._isSim(device, tag);

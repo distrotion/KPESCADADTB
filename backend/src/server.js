@@ -236,6 +236,7 @@ const { LineRecorderManager } = require('./lineRecorder/manager');
 const { mountLineRecorder } = require('./lineRecorder/routes');
 const lineRecorder = new LineRecorderManager({ tagEngine: engine, dbManager, licenseMaxLines: () => license.maxLines() });   // DLClr line-limit (disk license · USB ไม่เกี่ยว)
 lineRecorder._onViolation = (line, ev, viol) => { try { broadcast({ type: 'line_spec_violation', line, station: ev.station, carrier: ev.carrier, viol, t: Date.now() }); } catch (_) {} };
+engine.setLineRecorder(lineRecorder);   // device type 'lr' อ่าน job field ผ่าน LR manager
 mountLineRecorder(app, lineRecorder);
 
 // §F DB storage (TPKstock_Prod/Test) — attach dbManager + init (db mode เท่านั้น · file mode ข้ามทันที) · best-effort ตอน boot

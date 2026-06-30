@@ -59,6 +59,7 @@ class ScriptEngine {
     this.compiled  = new Map(); // scriptId -> AsyncFunction
     this.logs      = new Map(); // scriptId -> [{t, level, msg}]
     this.lastRun   = new Map(); // scriptId -> { t, ok, ms, error }
+    this._lastTagVal = new Map(); // "deviceId:tagId" -> ค่าล่าสุดที่เห็น (กัน tag_change รันทุก poll · รันเฉพาะตอนค่าเปลี่ยน)
     this.configPath = csv.resolveConfig('scripts.json', path.join(__dirname, 'config', 'scripts.json'));
 
     // ── Sandbox (worker thread + timeout) — กัน script ทำ backend ค้าง ────────────
@@ -118,7 +119,15 @@ class ScriptEngine {
   }
 
   // Called by server whenever any tag updates (for tag_change triggers)
+  //   tagEngine ยิง onTagUpdate ทุก poll (แม้ค่าเดิม) → ต้องกรองเอง: รันเฉพาะตอน "ค่าเปลี่ยนจริง"
+  //   (มิฉะนั้น trigger tag_change = รันตลอดทุก poll)
   onTagUpdate(deviceId, tagId, value, quality) {
+    const key = `${deviceId}:${tagId}`;
+    const had = this._lastTagVal.has(key);
+    const prev = this._lastTagVal.get(key);
+    this._lastTagVal.set(key, value);
+    // ค่าไม่เปลี่ยน (และเคยเห็นมาก่อน) → ไม่ trigger · ครั้งแรกที่เห็น tag ถือว่า "เปลี่ยน" 1 ครั้ง
+    if (had && Object.is(prev, value)) return;
     for (const s of this.scripts) {
       if (!s.enabled) continue;
       if (s.trigger?.type !== 'tag_change') continue;
