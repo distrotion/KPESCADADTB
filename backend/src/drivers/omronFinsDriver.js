@@ -1,5 +1,6 @@
 const dgram = require('dgram');
 const net = require('net');
+const { decodeMultiBit } = require('./bitDecode');
 
 // Omron FINS — FINS/UDP หรือ FINS/TCP (TCP ต้องทำ node-address handshake ก่อน)
 class OmronFinsDriver {
@@ -160,12 +161,9 @@ class OmronFinsDriver {
         const wordCount = ((b0 + n - 1) >> 4) + 1;
         const ws = await this._readWords(areaCode, word, wordCount);
         if (!ws) return null;
-        let v = 0;
-        for (let i = 0; i < n; i++) {
-          const g = b0 + i;
-          if ((ws[g >> 4] >> (g & 15)) & 1) v += 2 ** i;
-        }
-        return v;
+        const bits = [];
+        for (let i = 0; i < n; i++) { const g = b0 + i; bits.push((ws[g >> 4] >> (g & 15)) & 1); }
+        return decodeMultiBit(bits, tag.bitMode);
       }
 
       // ── BIT-level (W0.0) หรือ dataType BOOL/BIT ───────────────────────────

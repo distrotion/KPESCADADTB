@@ -1,5 +1,6 @@
 const net = require('net');
 const dgram = require('dgram');
+const { decodeMultiBit } = require('./bitDecode');
 
 // Mitsubishi MC Protocol 3E Frame implementation (TCP or UDP — เฟรมเหมือนกัน ต่างแค่ transport)
 class MCProtocolDriver {
@@ -142,18 +143,15 @@ class MCProtocolDriver {
       const isBit = ['M', 'X', 'Y', 'B', 'F', 'L', 'S', 'V'].includes(deviceCode.toUpperCase());
 
       // ── MULTI_BIT: อ่าน bit ต่อเนื่อง N ตัวจาก address ฐาน (เช่น M8 bits=20 → M8–M27)
-      //    คืนค่าเป็น decimal จากฐาน 2 (bit แรก = LSB) · อ่านครั้งเดียวทั้งชุด (เร็วกว่า N คำสั่ง)
+      //    decode ตาม bitMode (decimal เดิม / sequence ลำดับ) · อ่านครั้งเดียวทั้งชุด
       if (String(tag.dataType || '').toUpperCase() === 'MULTI_BIT' && isBit) {
         const n = Math.max(1, Math.min(parseInt(tag.bits) || 16, 32));
         const resp = await this._sendCommand(deviceCode, deviceNum, n, true);
         if (!resp || resp.length < Math.ceil(n / 2)) return null;
         // 3E binary bit-read: nibble-packed — bit คู่อยู่ครึ่งสูง bit คี่อยู่ครึ่งต่ำของ byte
-        let v = 0;
-        for (let i = 0; i < n; i++) {
-          const b = (i % 2 === 0) ? (resp[i >> 1] >> 4) & 1 : resp[i >> 1] & 1;
-          if (b) v += 2 ** i;   // 2**i (ไม่ใช้ bit-shift) → รองรับครบ 32 bit ไม่ติดลบ
-        }
-        return v;
+        const bits = [];
+        for (let i = 0; i < n; i++) bits.push((i % 2 === 0) ? (resp[i >> 1] >> 4) & 1 : resp[i >> 1] & 1);
+        return decodeMultiBit(bits, tag.bitMode);
       }
 
       if (isBit) {

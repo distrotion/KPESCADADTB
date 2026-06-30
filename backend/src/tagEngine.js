@@ -443,6 +443,8 @@ class TagEngine {
    * เป็นส่วน "device → data read → return tag set" ของทั้ง read side และ write side
    */
   async _readSource(device, tag, driver) {
+    // index tag — indexed addressing ฝั่ง SCADA (base + offset) ไม่พึ่ง Z/ladder ใน PLC
+    if (String(tag.dataType || '').toUpperCase() === 'INDEX') return this._readIndex(tag, device, driver);
     const key = `${device.id}:${tag.id}`;
     if (this._isSim(device, tag)) {
       // sim: อ่านจาก buffer data (หน่วยความจำจำลอง) — แทน driver.readTag ของ device จริง
@@ -455,6 +457,49 @@ class TagEngine {
     // push-based (mqtt/serial) — ค่าล่าสุดถูก push เข้า buffer แล้ว
     const cur = this.tagValues.get(key);
     return cur ? { value: cur.value, quality: cur.quality } : { value: null, quality: 'unknown' };
+  }
+
+  // address + offset (คงตัวอักษรพื้นที่ เช่น D/W · บวกเฉพาะเลข) → null ถ้า parse ไม่ได้/ติดลบ
+  _addrPlusOffset(address, n) {
+    const m = String(address || '').match(/^([A-Za-z]*)(\d+)$/);
+    if (!m) return null;
+    const num = parseInt(m[2], 10) + n;
+    if (!Number.isFinite(num) || num < 0) return null;
+    return m[1] + num;
+  }
+
+  // อ่าน index tag — base[index] = อ่านที่ [ base.start + index×step ] บน device ของ tag เอง
+  //   base = ตัวมันเอง: ตั้ง start address (เช่น D1000) + ชนิด element (idx.base/baseType/baseWords)
+  //   index = int เท่านั้น (ตำแหน่ง) — ค่าคงที่ หรือค่า "ล่าสุดใน buffer" ของ index tag (เสถียร · ไม่อ่านซ้ำ)
+  async _readIndex(tag, device, driver) {
+    const idx = tag.index || {};
+    if (!device || !idx.base) return { value: null, quality: 'bad' };
+    const bType = String(idx.baseType || 'INT16').toUpperCase();
+    const isStr = (bType === 'STRING' || bType === 'ASCII');
+    const bWords = Number(idx.baseWords) > 0 ? Number(idx.baseWords) : 4;
+    // index = int (ตำแหน่งใน array)
+    let offRaw;
+    if (idx.offsetMode === 'const') offRaw = idx.offsetConst;
+    else { const e = this.getTagValue(idx.offsetDevice, idx.offsetTag); offRaw = e ? e.value : null; }
+    const raw = (offRaw === null || offRaw === undefined || offRaw === '') ? NaN : Math.trunc(Number(offRaw));
+    if (!Number.isFinite(raw)) return { value: null, quality: 'bad' };   // index ไม่ valid
+    const off = raw + (Number(idx.offsetAdjust) || 0);   // ปรับค่า index (เช่น M10-1 → adjust -1)
+    // index ติดลบ (เช่น -1 = "ไม่เลือก") → ไม่ run address lookup · แสดงค่าเริ่มต้นตามกำหนด (ชนิดตรงกับ base)
+    if (off < 0) {
+      const dv = idx.defaultValue;
+      if (dv === undefined || dv === null || dv === '') return { value: isStr ? '' : null, quality: 'good' };
+      return { value: isStr ? String(dv) : (Number.isFinite(Number(dv)) ? Number(dv) : null), quality: 'good' };
+    }
+    // step auto = จำนวน word ต่อ 1 element (int16→1 · int32/float32→2 · int64/float64→4 · string→words)
+    const step = Number(idx.step) > 0 ? Number(idx.step)
+      : isStr ? bWords
+      : (['INT64', 'UINT64', 'FLOAT64', 'DOUBLE', 'LREAL'].includes(bType) ? 4
+        : ['INT32', 'UINT32', 'FLOAT32', 'REAL'].includes(bType) ? 2 : 1);
+    const effAddr = this._addrPlusOffset(idx.base, off * step);
+    if (effAddr == null) return { value: null, quality: 'bad' };   // start address ไม่มีเลข
+    // อ่าน target — synthetic tag ที่ address ใหม่ (decode แบบ base · string ใช้ words) บน device ของ tag เอง
+    const synthetic = { address: effAddr, dataType: bType, scale: tag.scale, words: isStr ? bWords : undefined };
+    return this._readSource(device, synthetic, driver);
   }
 
   /**
@@ -474,6 +519,10 @@ class TagEngine {
     // MULTI_BIT = read-only (อ่านกลุ่ม bit → decimal) — ห้ามเขียน · gate จุดเดียวครอบทุก driver (MC/FINS/Modbus parity)
     if (String(tag.dataType || '').toUpperCase() === 'MULTI_BIT') {
       throw new Error(`MULTI_BIT เป็น read-only (อ่านอย่างเดียว) — เขียนไม่ได้: ${tagRef}`);
+    }
+    // INDEX = read-only v1 (indexed addressing · เขียนผ่าน pointer = v2)
+    if (String(tag.dataType || '').toUpperCase() === 'INDEX') {
+      throw new Error(`INDEX (pointer) เป็น read-only — เขียนไม่ได้: ${tagRef}`);
     }
 
     const sim    = this._isSim(device, tag);

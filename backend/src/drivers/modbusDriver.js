@@ -1,5 +1,6 @@
 const ModbusRTU = require('modbus-serial');
 const codec     = require('./modbusCodec');   // §11.7 encode/decode กลาง (ใช้ร่วม KPENETWORK)
+const { decodeMultiBit } = require('./bitDecode');
 
 /**
  * Modbus Driver — รองรับ 16 / 32 / 64-bit
@@ -83,7 +84,7 @@ class ModbusDriver {
             // อ่าน coil ต่อเนื่อง N ตัวครั้งเดียว → decimal (coil แรก = LSB)
             const n1 = Math.max(1, Math.min(parseInt(tag.bits) || 16, 32));
             result = await this.client.readCoils(tag.address, n1);
-            return this._bitsToDec(result.data, n1);
+            return this._bitsToDec(result.data, n1, tag.bitMode);
           }
           result = await this.client.readCoils(tag.address, 1);
           return result.data[0] ? 1 : 0;
@@ -91,7 +92,7 @@ class ModbusDriver {
           if (dt === 'MULTI_BIT') {
             const n2 = Math.max(1, Math.min(parseInt(tag.bits) || 16, 32));
             result = await this.client.readDiscreteInputs(tag.address, n2);
-            return this._bitsToDec(result.data, n2);
+            return this._bitsToDec(result.data, n2, tag.bitMode);
           }
           result = await this.client.readDiscreteInputs(tag.address, 1);
           return result.data[0] ? 1 : 0;
@@ -126,11 +127,11 @@ class ModbusDriver {
     return val;
   }
 
-  // แปลงอาเรย์ bool จาก readCoils/readDiscreteInputs → decimal (index 0 = LSB)
-  _bitsToDec(arr, n) {
-    let v = 0;
-    for (let i = 0; i < n; i++) { if (arr[i]) v += 2 ** i; }
-    return v;
+  // แปลงอาเรย์ bool จาก readCoils/readDiscreteInputs → ค่า ตาม bitMode (decimal/sequence)
+  _bitsToDec(arr, n, mode) {
+    const bits = [];
+    for (let i = 0; i < n; i++) bits.push(arr[i] ? 1 : 0);
+    return decodeMultiBit(bits, mode);
   }
 
   // ── เขียนค่า (16/32/64-bit) ────────────────────────────────────────────────
