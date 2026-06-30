@@ -79,17 +79,22 @@ class DatalogManager {
   // ── normalize / validate 1 นิยาม ───────────────────────────────────────────
   _norm(d) {
     d = d || {};
-    const series = (Array.isArray(d.series) ? d.series : []).map((s) => ({
-      device: String(s.device || ''),
-      tag: String(s.tag || ''),
-      label: s.label != null ? String(s.label) : '',
-      color: typeof s.color === 'number' ? s.color : null,
-      text: s.text === true,   // เก็บเป็นข้อความ (string tag · comment) → value_text · ไม่ใช่ตัวเลข/ไม่ปัด/ไม่ transform
-      // transform ก่อน log (เฉพาะตอน log · แยกจาก tag.scale): logged = value*factor + offset แล้วปัด decimals ตำแหน่ง
-      factor: (Number.isFinite(Number(s.factor)) && Number(s.factor) !== 0) ? Number(s.factor) : 1,   // 0 = กันหารพัง → 1
-      offset: Number.isFinite(Number(s.offset)) ? Number(s.offset) : 0,
-      decimals: (s.decimals == null || s.decimals === '') ? null : clampInt(s.decimals, 0, 10, 0),
-    })).filter((s) => s.device && s.tag);
+    const series = (Array.isArray(d.series) ? d.series : []).map((s) => {
+      const script = String(s.script || '').trim();   // โหมด script: คำนวณค่าตอน log (tag/pad/Math/...) แทนเลือก tag
+      return {
+        device: script ? '__script__' : String(s.device || ''),   // script → device/tag เป็น identity ที่ตั้ง (ชื่อย่อ)
+        tag: script ? String(s.tag || s.label || '') : String(s.tag || ''),
+        script,
+        label: s.label != null ? String(s.label) : '',
+        color: typeof s.color === 'number' ? s.color : null,
+        text: s.text === true,   // เก็บเป็นข้อความ (string tag · comment) → value_text · ไม่ใช่ตัวเลข/ไม่ปัด/ไม่ transform
+        markerPos: ['top', 'bottom', 'none'].includes(String(s.markerPos)) ? String(s.markerPos) : 'top',   // ตำแหน่งป้าย marker บนกราฟ Trend (text)
+        // transform ก่อน log (เฉพาะตอน log · แยกจาก tag.scale): logged = value*factor + offset แล้วปัด decimals ตำแหน่ง
+        factor: (Number.isFinite(Number(s.factor)) && Number(s.factor) !== 0) ? Number(s.factor) : 1,   // 0 = กันหารพัง → 1
+        offset: Number.isFinite(Number(s.offset)) ? Number(s.offset) : 0,
+        decimals: (s.decimals == null || s.decimals === '') ? null : clampInt(s.decimals, 0, 10, 0),
+      };
+    }).filter((s) => s.script ? !!s.tag : (s.device && s.tag));   // script: ต้องมีชื่อย่อ (identity)
     let storage = d.storage === 'database' ? 'database' : 'csv';
     const dbConn = String(d.dbConn || '');
     if (storage === 'database' && !dbConn) storage = 'csv';   // database ต้องมี conn ไม่งั้น fallback
@@ -244,14 +249,27 @@ class DatalogManager {
     const ts = Date.now();
     const samples = [];
     for (const s of log.series) {
-      const v = this.tagEngine.getTagValue(s.device, s.tag);
-      if (!v || v.value == null) continue;
-      if (s.text) { samples.push({ device: s.device, tag: s.tag, valueText: String(v.value), ts }); continue; }   // string tag → ข้อความ
-      const num = Number(v.value);
+      const raw = s.script ? this._evalScript(s.script) : (() => { const v = this.tagEngine.getTagValue(s.device, s.tag); return v ? v.value : null; })();
+      if (raw == null) continue;
+      if (s.text) { samples.push({ device: s.device, tag: s.tag, valueText: String(raw), ts }); continue; }   // ข้อความ (string/comment) → value_text
+      const num = Number(raw);
       if (Number.isNaN(num)) continue;
       samples.push({ device: s.device, tag: s.tag, value: this._applyTransform(s, num), ts });
     }
     this._write(log, samples);
+  }
+
+  // eval script ของ datalog series (เหมือน LR job-field) — helper: tag(device,tag) · pad(v,w,ch='0') · Math/String/Number
+  //   เช่น  pad(tag('PLC02','D100'),4)  ·  tag('PLC1','A')+tag('PLC1','B')  ·  'LOT'+tag('PLC1','SEQ')
+  _evalScript(expr) {
+    try {
+      const tag = (d, t) => { const v = this.tagEngine.getTagValue(d, t); return v ? v.value : null; };
+      const pad = (v, w, ch) => String(v == null ? '' : v).padStart(Number(w) || 0, ch != null ? String(ch) : '0');
+      // eslint-disable-next-line no-new-func
+      const fn = new Function('tag', 'pad', 'Math', 'String', 'Number', `"use strict"; return (${expr});`);
+      const r = fn(tag, pad, Math, String, Number);
+      return r == null ? null : r;
+    } catch (_) { return null; }
   }
 
   // เขียน samples ลง store ของ log (csv/db) — ใช้ทั้ง periodic sampler + on-change
