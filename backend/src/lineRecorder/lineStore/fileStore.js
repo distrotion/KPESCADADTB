@@ -71,7 +71,7 @@ class FileStore {
     const job = this.db.jobs[jobKey]; if (!job) return null;
     return { ...job, steps: Object.values(this.db.steps[jobKey] || {}).sort((a, b) => (a.seq || 0) - (b.seq || 0)) };
   }
-  async listJobs({ line = null, dateKey = null, status = null, q = null, from = null, to = null, limit = 200 } = {}) {
+  async listJobs({ line = null, dateKey = null, status = null, q = null, from = null, to = null, field = null, value = null, limit = 200 } = {}) {
     let arr = Object.values(this.db.jobs);
     const reg = (j) => j.registerAt || j.loadAt || j.enterAt || j.createdAt || 0;   // เวลาอ้างอิง = Register time
     if (line) arr = arr.filter((j) => j.line === line);
@@ -80,6 +80,8 @@ class FileStore {
     if (from != null) arr = arr.filter((j) => reg(j) >= from);   // ช่วงวันที่
     if (to != null) arr = arr.filter((j) => reg(j) <= to);
     if (q) { const s = String(q).toLowerCase(); arr = arr.filter((j) => `${j.carrier} ${j.jobKey} ${JSON.stringify(j.data || j.header || {})}`.toLowerCase().includes(s)); }
+    // ค้นเป๊ะที่ field เจาะจง (เช่น barcode) — รองรับ keyField=carrier ด้วย
+    if (field && value != null) { const fk = String(field); const v = String(value); arr = arr.filter((j) => String(j.carrier) === v || String((j.data || j.header || {})[fk] ?? '') === v); }
     arr.sort((a, b) => reg(b) - reg(a));
     return arr.slice(0, limit).map((j) => ({ ...j, steps: Object.values(this.db.steps[j.jobKey] || {}).sort((a, b) => (a.seq || 0) - (b.seq || 0)) }));   // แนบ steps (เวลาชุบต่อบ่อ)
   }

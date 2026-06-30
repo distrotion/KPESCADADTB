@@ -122,7 +122,7 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);
     if (!j) return null;
     return { ...this._mapJob(j), steps: this._steps(j.steps) };
   }
-  async listJobs({ line = null, dateKey = null, status = null, q = null, from = null, to = null, limit = 200 } = {}) {
+  async listJobs({ line = null, dateKey = null, status = null, q = null, from = null, to = null, field = null, value = null, limit = 200 } = {}) {
     if (!line) return [];   // ตาราง per-line ต้องระบุ line
     const w = []; const p = [];
     const tcol = 'COALESCE(register_at, load_at, enter_at, created_at)';
@@ -131,6 +131,8 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);
     if (from != null) { p.push(from); w.push(`${tcol} >= $${p.length}`); }
     if (to != null) { p.push(to); w.push(`${tcol} <= $${p.length}`); }
     if (q) { p.push('%' + q + '%'); w.push(`(carrier ILIKE $${p.length} OR job_key ILIKE $${p.length} OR header::text ILIKE $${p.length})`); }
+    // ค้นเป๊ะที่ field เจาะจงใน header JSON (เช่น barcode) — sanitize key กัน injection (เทียบเป็น text)
+    if (field && value != null) { const fk = String(field).replace(/[^A-Za-z0-9_]/g, ''); if (fk) { p.push(String(value)); w.push(`(carrier=$${p.length} OR header->>'${fk}'=$${p.length})`); } }
     p.push(limit);
     const sql = `SELECT job_key,line,date_key,lane,carrier,run,set_id,status,gap,enter_at,register_at,load_at,exit_at,header,steps,created_at,updated_at
                  FROM ${this._t(line, 'job')} ${w.length ? 'WHERE ' + w.join(' AND ') : ''}

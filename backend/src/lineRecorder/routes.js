@@ -50,7 +50,7 @@ function mountLineRecorder(app, manager) {
   });
 
   app.get('/api/line-recorder/jobs', async (req, res) => {
-    try { res.json({ ok: true, jobs: await manager.jobs({ line: req.query.line || null, dateKey: req.query.date || null, status: req.query.status || null, q: req.query.q || null, from: req.query.from ? Number(req.query.from) : null, to: req.query.to ? Number(req.query.to) : null, limit: Number(req.query.limit) || 200 }) }); } catch (e) { se(res, e); }
+    try { res.json({ ok: true, jobs: await manager.jobs({ line: req.query.line || null, dateKey: req.query.date || null, status: req.query.status || null, q: req.query.q || null, from: req.query.from ? Number(req.query.from) : null, to: req.query.to ? Number(req.query.to) : null, field: req.query.field || null, value: req.query.value != null ? req.query.value : null, limit: Number(req.query.limit) || 200 }) }); } catch (e) { se(res, e); }
   });
   app.get('/api/line-recorder/jobs/:jobKey', async (req, res) => {
     try { const j = await manager.job(decodeURIComponent(req.params.jobKey)); if (!j) return res.status(404).json({ ok: false, error: 'ไม่พบ job' }); res.json({ ok: true, job: j }); } catch (e) { se(res, e); }

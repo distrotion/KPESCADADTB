@@ -115,7 +115,7 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);`;
     if (!j) return null;
     return { ...this._mapJob(j), steps: this._steps(JSON.parse(j.steps || '{}')) };
   }
-  async listJobs({ line = null, dateKey = null, status = null, q = null, from = null, to = null, limit = 200 } = {}) {
+  async listJobs({ line = null, dateKey = null, status = null, q = null, from = null, to = null, field = null, value = null, limit = 200 } = {}) {
     if (!line) return [];
     const jt = this._t(line, 'job');
     const w = []; const p = [];
@@ -125,6 +125,8 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);`;
     if (from != null) { p.push(from); w.push(`${tcol} >= ?`); }
     if (to != null) { p.push(to); w.push(`${tcol} <= ?`); }
     if (q) { const like = '%' + q + '%'; p.push(like, like, like); w.push('(carrier LIKE ? OR job_key LIKE ? OR header LIKE ?)'); }
+    // ค้นเป๊ะที่ field เจาะจงใน header JSON (เช่น barcode) — sanitize key · เทียบเป็น text · รองรับ keyField=carrier ด้วย
+    if (field && value != null) { const fk = String(field).replace(/[^A-Za-z0-9_]/g, ''); if (fk) { p.push(String(value), String(value)); w.push(`(carrier=? OR CAST(json_extract(header,'$.${fk}') AS TEXT)=?)`); } }
     p.push(limit);
     const sql = `SELECT * FROM ${jt} ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY ${tcol} DESC LIMIT ?`;
     return this.db.prepare(sql).all(...p).map((j) => ({ ...this._mapJob(j), steps: this._steps(JSON.parse(j.steps || '{}')) }));
