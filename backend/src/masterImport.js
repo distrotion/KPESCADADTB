@@ -1,7 +1,9 @@
 // masterImport.js — import/update master จากไฟล์ (Excel ตอนนี้ · API อนาคต) ผ่าน field-map layer
 //   flow เดียว (source-agnostic): rows (Excel/API) → field-map (column→field) → sanitize → upsert by MATCODE
 //   *** ภายใน Stock field ยังไม่ freeze → external I/O ต้องผ่าน field-map (constraint) ***
-const XLSX = require('xlsx');
+// xlsx = optional (ใช้เฉพาะ import Excel) — ไม่ติดตั้งก็ไม่ crash ทั้ง backend (เครื่องลูกค้าที่ npm install ไม่ได้)
+let XLSX = null;
+try { XLSX = require('xlsx'); } catch (_) { /* ไม่มี xlsx → ปิดฟีเจอร์ import Excel เฉย ๆ */ }
 
 function num(v) { const n = Number(String(v == null ? '' : v).replace(/[, ]/g, '')); return Number.isFinite(n) ? n : null; }
 // normalize header → key (trim · lower · ตัด space/._()-/ ออก) → จับ alias ได้แม้รูปแบบต่าง
@@ -30,6 +32,7 @@ const DEFAULT_ALIASES = {
 
 // อ่าน workbook (base64) → rows [{header:val}] (sheet แรก · แถวแรก = header · raw:false = ได้ string ตามที่เห็น)
 function rowsFromBase64(b64, { sheet } = {}) {
+  if (!XLSX) throw new Error('ฟีเจอร์ import Excel ต้องมี package "xlsx" (รัน `npm install` ใน backend หรือใช้ offline bundle)');
   const wb = XLSX.read(b64, { type: 'base64' });
   const name = (sheet && wb.Sheets[sheet]) ? sheet : wb.SheetNames[0];
   if (!name) return [];
