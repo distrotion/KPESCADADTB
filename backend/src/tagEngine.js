@@ -268,6 +268,7 @@ class TagEngine {
       try {
         for (const tag of device.tags) {
           const { value, quality } = await this._readLrTag(device, tag);
+          if (this.drivers.get(device.id) !== lrDriver) return;   // ถูกถอด/reinit ระหว่าง await → ทิ้งผล (กัน orphan buffer)
           this._setTagValue(device.id, tag.id, value, quality);
           if (quality === 'good') device._lastGoodRead = Date.now();
         }
@@ -318,7 +319,10 @@ class TagEngine {
   _castLr(raw, dataType) {
     const t = String(dataType || '').toUpperCase();
     if (t === 'STRING' || t === 'TEXT') return String(raw);
-    if (t.includes('BOOL')) return raw ? 1 : 0;
+    if (t.includes('BOOL')) {   // string "0"/"false"/"off"/"no" = เท็จ (JS truthy จะให้ 1 ผิด)
+      const s = String(raw).trim().toLowerCase();
+      return (s === '' || s === '0' || s === 'false' || s === 'off' || s === 'no') ? 0 : 1;
+    }
     const n = Number(raw);
     if (!Number.isFinite(n)) return t === 'INT' || t.includes('INT') ? 0 : String(raw);
     return (t.includes('FLOAT') || t.includes('REAL') || t.includes('DOUBLE')) ? n : Math.trunc(n);

@@ -114,20 +114,23 @@ class ScriptEngine {
   reload() {
     this.stop();
     this.compiled.clear();
+    this._lastTagVal.clear();   // ล้าง baseline tag_change (tag/config อาจเปลี่ยนชุด)
     this._load();
     this.start();
   }
 
   // Called by server whenever any tag updates (for tag_change triggers)
-  //   tagEngine ยิง onTagUpdate ทุก poll (แม้ค่าเดิม) → ต้องกรองเอง: รันเฉพาะตอน "ค่าเปลี่ยนจริง"
-  //   (มิฉะนั้น trigger tag_change = รันตลอดทุก poll)
+  //   tagEngine ยิง onTagUpdate ทุก poll (แม้ค่าเดิม) → ต้องกรองเอง: รันเฉพาะตอน "ค่าหรือ quality เปลี่ยนจริง"
+  //   (มิฉะนั้น trigger tag_change = รันตลอดทุก poll) · quality เปลี่ยน (comm loss/recovery) ก็นับ (script เช็ค trigger.quality ได้)
   onTagUpdate(deviceId, tagId, value, quality) {
     const key = `${deviceId}:${tagId}`;
+    // กันโตไม่จำกัด (tag ถูกลบ/เปลี่ยนชื่อบ่อย) — เกินเพดานล้างทั้ง map (ผลข้างเคียงแค่ first-seen fire ซ้ำ 1 รอบ)
+    if (this._lastTagVal.size > 20000) this._lastTagVal.clear();
     const had = this._lastTagVal.has(key);
     const prev = this._lastTagVal.get(key);
-    this._lastTagVal.set(key, value);
-    // ค่าไม่เปลี่ยน (และเคยเห็นมาก่อน) → ไม่ trigger · ครั้งแรกที่เห็น tag ถือว่า "เปลี่ยน" 1 ครั้ง
-    if (had && Object.is(prev, value)) return;
+    this._lastTagVal.set(key, { v: value, q: quality });
+    // ค่า+quality ไม่เปลี่ยน (และเคยเห็นมาก่อน) → ไม่ trigger · ครั้งแรกที่เห็น tag ถือว่า "เปลี่ยน" 1 ครั้ง
+    if (had && prev && Object.is(prev.v, value) && prev.q === quality) return;
     for (const s of this.scripts) {
       if (!s.enabled) continue;
       if (s.trigger?.type !== 'tag_change') continue;
