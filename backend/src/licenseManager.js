@@ -202,7 +202,10 @@ class LicenseManager {
     // DLClr (จำนวนไลน์ Line Recorder): active บน base หรือ linerec (line record set) · ใบ line-pack replace ใบเดียว → เอาค่ามากสุด (กัน edge) · ไม่มี = 1
     const maxLines = (tier === 'base' || tier === 'linerec') ? Math.max(1, ...valid.map((r) => Number.isFinite(r.lines) ? r.lines : 0)) : 1;
     const first = valid[0];
-    return (this._cache = { ok: true, reason: 'valid', tier, edition: tier, features, maxLines, ...meta, customer: first.customer || '', issued: first.issued || null, exp: first.exp || null });
+    // sig ของใบ "ฐาน" (ตาม tier) → ใช้ derive instance-lock port · add-on (feature/line-pack) ไม่เปลี่ยน = port นิ่ง
+    const scopeToTier = (r) => r.scope === 'backend' ? 'backend' : r.scope === 'linerec' ? 'linerec' : (r.scope === 'feature' ? null : 'base');
+    const tierLic = valid.find((r) => scopeToTier(r) === tier) || first;
+    return (this._cache = { ok: true, reason: 'valid', tier, edition: tier, features, maxLines, _lockSig: tierLic.sig || '', ...meta, customer: first.customer || '', issued: first.issued || null, exp: first.exp || null });
   }
 
   // ตรวจ license string (base64) เทียบเครื่องนี้ — สมมติ enforced แล้ว · ไม่อ่าน/เขียนไฟล์ (ใช้ทั้ง verify + install candidate)
@@ -233,7 +236,7 @@ class LicenseManager {
     // scope (v2): 'backend'|'base'|'feature' · v1/ไม่มี = 'base' (ของเก่าได้ base เต็ม)
     const scope = ['backend', 'feature', 'linerec'].includes(lic.scope) ? lic.scope : 'base';
     const lines = (Number.isFinite(+lic.lines) && +lic.lines > 0) ? Math.floor(+lic.lines) : null;   // DLClr: จำนวนไลน์ในใบ (line-pack)
-    return { ok: true, reason: 'valid', ...base, scope, lines, issued: lic.issued || null, exp: lic.exp || null, features: Array.isArray(lic.features) ? lic.features : [] };
+    return { ok: true, reason: 'valid', ...base, scope, lines, sig: String(sig || ''), issued: lic.issued || null, exp: lic.exp || null, features: Array.isArray(lic.features) ? lic.features : [] };
   }
 
   // log ทุกครั้งที่ register/activate/deactivate → <config>/license-activations.log (JSONL · per-machine · append · audit)
@@ -249,8 +252,37 @@ class LicenseManager {
     } catch (_) {}
   }
 
+  // ── Instance lock: 1 ใบ license = 1 instance ที่รันได้บนเครื่องเดียว ───────────
+  //   ผูก TCP port บน 127.0.0.1 ที่ derive จาก "ลายเซ็นใบฐาน" → instance ที่ 2 (copy โฟลเดอร์ ใบเดียวกัน)
+  //   bind ไม่ได้ (EADDRINUSE) = ถือว่า license ถูกใช้อยู่ · ใบต่างกัน = port ต่างกัน (ซื้อ 2 ใบรัน 2 instance ได้)
+  //   process ตาย = OS ปล่อย port เอง (ไม่มี stale lock · ไม่ต้อง heartbeat) · dep-inject net/portFn ได้ (เทส)
+  _lockPort() {
+    const sig = (this._cache && this._cache._lockSig) || '';
+    if (!sig) return null;
+    const h = crypto.createHash('sha256').update('kpe-lock|' + sig).digest();
+    return 41000 + (h.readUInt32BE(0) % 20000);   // 41000..60999 (เลี่ยง port ระบบ/แอป)
+  }
+  // ยึด lock ตอน start (เรียกครั้งเดียวจาก backend) → { held, port, reason }
+  async acquireInstanceLock(net) {
+    if (this._instanceLock && (this._instanceLock.held || this._instanceLock.skipped)) return this._instanceLock;   // สำเร็จแล้ว = idempotent · ล้มเหลว = ให้ลองใหม่ได้ (instance เก่าตาย)
+    if (!this._cache) this.verify();
+    const c = this._cache || {};   // ใช้ raw validity (ไม่ใช่ status ที่รวม lock แล้ว = feedback loop)
+    if (!c.enforced || !c.ok) return (this._instanceLock = { held: true, skipped: true, port: null });   // dev/ใบ invalid → ไม่ต้องล็อก (gate อื่นจัดการ)
+    const port = this._lockPort();
+    if (!port) return (this._instanceLock = { held: true, skipped: true, port: null });
+    const netMod = net || require('net');
+    return await new Promise((resolve) => {
+      const srv = netMod.createServer((s) => { try { s.end('kpe-license-lock'); } catch (_) {} });
+      srv.once('error', (e) => resolve(this._instanceLock = { held: false, port, reason: e && e.code === 'EADDRINUSE' ? 'license-in-use' : 'lock-error' }));
+      srv.listen(port, '127.0.0.1', () => { try { srv.unref(); } catch (_) {} this._lockSrv = srv; resolve(this._instanceLock = { held: true, port }); });
+    });
+  }
+  releaseInstanceLock() { try { this._lockSrv && this._lockSrv.close(); } catch (_) {} this._lockSrv = null; this._instanceLock = null; }
+  instanceLocked() { return !!(this._instanceLock && this._instanceLock.held === false); }   // ใบถูกใช้โดย instance อื่น
+
   // นโยบาย gate (ใช้ทั้ง Manager + backend) — บล็อกเฉพาะ enforced + invalid + "armed" (มี pubkey ฝัง)
   //   not-enforced (mac/dev/win-linux ไม่มี flag) → ไม่บล็อก · no-pubkey (ยังไม่ฝัง key) = ยังไม่ arm → ไม่บล็อก (ปลอดภัยตอน rollout)
+  //   + instance-lock: ใบถูกใช้โดย instance อื่นบนเครื่องนี้ = บล็อก (license-in-use)
   blocked() {
     const st = this.status();
     return !!(st.enforced && !st.ok && st.reason !== 'no-pubkey');
@@ -260,7 +292,8 @@ class LicenseManager {
   status(force) {
     if (force || !this._cache) this.verify();
     const c = this._cache || {};
-    return { ok: !!c.ok, reason: c.reason || '', enforced: !!c.enforced, platform: c.platform || this.platform(), isPi: !!c.isPi, tier: c.tier || null, edition: c.edition || c.tier || null, features: c.features || [], maxLines: c.maxLines != null ? c.maxLines : 1, machineId: c.machineId || '', fingerprint: c.fingerprint || '', customer: c.customer || '', exp: c.exp || null };
+    const locked = this.instanceLocked();   // ใบซ้ำ instance อื่น → present เป็น blocked
+    return { ok: !!c.ok && !locked, reason: locked ? 'license-in-use' : (c.reason || ''), enforced: !!c.enforced, platform: c.platform || this.platform(), isPi: !!c.isPi, tier: c.tier || null, edition: c.edition || c.tier || null, features: c.features || [], maxLines: c.maxLines != null ? c.maxLines : 1, machineId: c.machineId || '', fingerprint: c.fingerprint || '', customer: c.customer || '', exp: c.exp || null, lockPort: (this._instanceLock && this._instanceLock.port) || null };
   }
 
   // ── grant (3-tier · §10) ────────────────────────────────────────────────────

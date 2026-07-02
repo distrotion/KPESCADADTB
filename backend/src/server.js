@@ -76,6 +76,7 @@ const _licTimer = setInterval(() => {
   try {
     license.refresh(); LIC = licenseState();
     if (USB_MODE) return;   // mode B ใช้ USB poller ด้านล่างแทน
+    if (license.instanceLocked()) license.acquireInstanceLock().catch(() => {});   // retry: instance อื่นตายแล้ว → ยึด lock คืนได้ (มีผล tick ถัดไป)
     // หมายเหตุ: /api 403 + WS close ใช้ blockedNow() สด = บล็อก "ทันที" อยู่แล้ว · debounce นี้คุมเฉพาะการ "หยุด engine" (กระทบการคุมงานจริง)
     const nb = blockedNow();
     _blockStreak = nb ? _blockStreak + 1 : 0;
@@ -2556,6 +2557,8 @@ function startServicesOnce() {
 
 // License gated → ไม่สตาร์ท engine/services · แค่ listen ให้ /api/license + /health + 403 ตอบได้ (recover ผ่าน Manager/USB)
 (async () => {
+  // instance-lock: ยึด port ต่อ "ใบ" → รันหลาย instance ใบเดียวกันบนเครื่องเดียวไม่ได้ (USB mode ไม่ใช้ disk-lock)
+  if (!USB_MODE) { try { const lk = await license.acquireInstanceLock(); if (!lk.held) console.error(`[LICENSE] ใบนี้ถูกใช้โดย instance อื่นบนเครื่องนี้แล้ว (lock port ${lk.port}) → backend gated (license-in-use)`); LIC = licenseState(); } catch (_) {} }
   const gated = blockedNow();
   if (!gated) { await startEngine(); startServicesOnce(); }
   server.listen(PORT, HOST, () => {

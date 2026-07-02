@@ -834,7 +834,12 @@ function applyLicense(s) {
   if (s && s.blocked) {   // invalid → แถบแดง (activate)
     panel.style.display = '';
     const usbMsg = (s.mode === 'usb' && !s.usbPresent) ? ' · 🔌 โหมด USB — เสียบ master key เพื่อเริ่มระบบ' : '';
-    document.getElementById('lic-reason').textContent = '· ' + (s.reason || '') + usbMsg;
+    const REASON_TH = {
+      'license-in-use': 'ใบนี้ถูกใช้โดยอีก instance บนเครื่องนี้แล้ว (1 ใบ = 1 instance)' + (s.lockPort ? ' · lock ' + s.lockPort : ''),
+      'no-license': 'ยังไม่มี license — activate ก่อน', 'wrong-machine': 'ใบนี้ไม่ตรงกับเครื่องนี้ (คนละ machine-id)',
+      'expired': 'license หมดอายุ', 'bad-signature': 'ลายเซ็นไม่ถูกต้อง (ใบปลอม/เสีย)', 'no-base': 'มีแต่ใบเสริม (DLC) ยังไม่มีใบฐาน', 'corrupt': 'ไฟล์ license เสีย',
+    };
+    document.getElementById('lic-reason').textContent = '· ' + (REASON_TH[s.reason] || s.reason || '') + usbMsg;
     document.getElementById('lic-mid').textContent = s.machineId || '';
     document.getElementById('lic-fp').textContent = s.fingerprint || '';
     if (active) active.style.display = 'none';
