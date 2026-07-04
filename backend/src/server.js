@@ -1002,6 +1002,16 @@ app.put('/api/activity-config', (req, res) => {
     res.json({ success: true, config, before: before.dbConnection });
   } catch (e) { res.status(400).json({ success: false, error: e.message }); }
 });
+// POST /api/activity/prune  { months } → ล้าง log เก่ากว่า N เดือน (ทันที) → { success, deleted, mode }
+app.post('/api/activity/prune', async (req, res) => {
+  try {
+    const months = Math.floor(Number((req.body || {}).months));
+    if (!Number.isFinite(months) || months <= 0) return res.status(400).json({ success: false, error: 'ระบุจำนวนเดือน (>=1)' });
+    const r = await activityLog.prune(months);
+    logActivity(req, { category: 'system', action: 'log_prune', target: 'activity-log', detail: `ลบเก่ากว่า ${months} เดือน · ${r.deleted} ${r.mode === 'csv' ? 'ไฟล์' : 'รายการ'}` });
+    res.json({ success: true, ...r });
+  } catch (e) { res.status(400).json({ success: false, error: e.message }); }
+});
 // GET /api/activity/export?from=&to=  → CSV (ฟิลด์ครบ)
 app.get('/api/activity/export', async (req, res) => {
   try {
@@ -2565,6 +2575,7 @@ function startServicesOnce() {
     console.log(`KPE SCADA Backend running on ${HOST}:${PORT}`);
     console.log(`WebSocket: ws://${HOST}:${PORT}`);
     console.log(`REST API:  http://${HOST}:${PORT}/api`);
+    try { activityLog.startAutoPrune(); } catch (_) {}   // retention: ลบ activity log เก่าอัตโนมัติ (ทำงานแม้ gated)
     if (gated) { console.error(`[LICENSE] backend gated (${gateInfo().reason}) — engine off · /api 403 ยกเว้น /health,/license${USB_MODE ? ' · เสียบ USB master key เพื่อเริ่ม' : ' · recover ผ่าน Manager'}`); return; }
     console.log(`Scripts:   ${scriptEngine.scripts.length} loaded`);
     console.log(`Alarms:    ${alarmEngine.defs.length} loaded`);

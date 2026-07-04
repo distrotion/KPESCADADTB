@@ -19,9 +19,12 @@ class ActivityLog {
     this.dbManager = dbManager || null;
     this.config = {
       dbConnection: '', dbTable: 'activity_log', journalLimit: 2000,
+      // retention: ลบ log เก่ากว่า N เดือน (0 = เก็บตลอด · opt-in เหมือน datalog) · autoPrune = ลบอัตโนมัติทุกชั่วโมง
+      retentionMonths: 0, autoPrune: false,
       // เปิด/ปิด log ต่อหมวด (tag = log เฉพาะ tag ที่ตั้ง logActivity ไว้ ถึงหมวดนี้จะเปิด)
       categories: { auth: true, deploy: true, tag: true, system: true, script: true },
     };
+    this._pruneTimer = null;
     this.journal = [];
     this._dbReady = new Set();
     this._load();
@@ -86,10 +89,65 @@ class ActivityLog {
   setConfig(updates) {
     const cats = { ...this.config.categories, ...(updates.categories || {}) };
     this.config = { ...this.config, ...updates, categories: cats };
+    // sanitize retention: จำนวนเดือน >=0 (0=เก็บตลอด) · autoPrune bool
+    if (updates.retentionMonths !== undefined) {
+      const m = Math.floor(Number(updates.retentionMonths));
+      this.config.retentionMonths = Number.isFinite(m) && m > 0 ? Math.min(m, 600) : 0;
+    }
+    if (updates.autoPrune !== undefined) this.config.autoPrune = !!updates.autoPrune;
     this._dbReady.clear();
     this._save();
+    // เปิด auto-prune + มีเดือนตั้งไว้ → ลบทันทีเลย (ไม่ต้องรอรอบชั่วโมง)
+    if (this.config.autoPrune && this.config.retentionMonths > 0) this.prune(this.config.retentionMonths).catch(() => {});
     return this.config;
   }
+
+  // cutoff = เวลาเริ่มของ "N เดือนก่อนจากตอนนี้" (เก็บ N เดือนล่าสุด · เก่ากว่านี้ลบ) · 0/ว่าง = ไม่ลบ
+  _cutoffMs(months) {
+    const m = Math.floor(Number(months) || 0);
+    if (m <= 0) return 0;
+    const d = new Date(); d.setMonth(d.getMonth() - m);
+    return d.getTime();
+  }
+
+  // ลบ log เก่ากว่า N เดือน — journal + DB (DELETE WHERE ts<cutoff) หรือ CSV (ลบไฟล์รายวันเก่า) · best-effort
+  async prune(months) {
+    const cutoff = this._cutoffMs(months);
+    if (!cutoff) return { deleted: 0, mode: 'none', cutoff: 0 };
+    let deleted = 0, mode;
+    const before = this.journal.length;
+    this.journal = this.journal.filter((e) => e.t >= cutoff);   // trim in-memory
+    const journalTrimmed = before - this.journal.length;
+    if (this.config.dbConnection && this.dbManager) {
+      mode = 'db';
+      try {
+        const table = (this.config.dbTable || 'activity_log').replace(/[^a-zA-Z0-9_]/g, '');
+        const type = (this.dbManager.resolve(this.config.dbConnection).type) || 'pg';
+        const dialect = dialectOf(type);
+        const phx = dialect === 'mssql' ? '@p0' : (dialect === 'mysql' || dialect === 'sqlite') ? '?' : '$1';
+        const r = await this.dbManager.query(this.config.dbConnection, `DELETE FROM ${table} WHERE ts < ${phx}`, [tsVal(dialect, new Date(cutoff))]);
+        deleted = Number((r && (r.rowCount != null ? r.rowCount : r.affectedRows)) || 0) || journalTrimmed;
+      } catch (_) { deleted = journalTrimmed; }
+    } else {
+      mode = 'csv';
+      const cutStamp = csv.dateStamp(new Date(cutoff));
+      for (const f of csv.listDailyFiles(this.csvDir, CSV_PREFIX)) {
+        const m = f.match(/(\d{4}-\d{2}-\d{2})\.csv$/);
+        if (m && m[1] < cutStamp) { try { fs.unlinkSync(path.join(this.csvDir, f)); deleted++; } catch (_) {} }
+      }
+    }
+    return { deleted, mode, cutoff };
+  }
+
+  // auto-prune: เช็คทุกชั่วโมง + ตอน boot (ลบเมื่อ autoPrune เปิด + มีเดือนตั้งไว้) — เหมือน datalog
+  startAutoPrune() {
+    if (this._pruneTimer) return;
+    const tick = () => { if (this.config.autoPrune && Number(this.config.retentionMonths) > 0) this.prune(this.config.retentionMonths).catch(() => {}); };
+    this._pruneTimer = setInterval(tick, 3600000);
+    if (this._pruneTimer.unref) this._pruneTimer.unref();
+    tick();
+  }
+  stopAutoPrune() { if (this._pruneTimer) { clearInterval(this._pruneTimer); this._pruneTimer = null; } }
 
   // ── Export (full fields) ช่วง [fromMs,toMs] → array ของ row (object) ───────────────
   async exportEntries(fromMs, toMs) {
