@@ -76,7 +76,7 @@ const _licTimer = setInterval(() => {
   try {
     license.refresh(); LIC = licenseState();
     if (USB_MODE) return;   // mode B ใช้ USB poller ด้านล่างแทน
-    if (license.instanceLocked()) license.acquireInstanceLock().catch(() => {});   // retry: instance อื่นตายแล้ว → ยึด lock คืนได้ (มีผล tick ถัดไป)
+    license.acquireInstanceLock().catch(() => {});   // idempotent เมื่อ held/skipped (no-op) · retry เมื่อ held:false (instance อื่นตาย) หรือ null (refresh ปล่อยเพราะ sig เปลี่ยน)
     // หมายเหตุ: /api 403 + WS close ใช้ blockedNow() สด = บล็อก "ทันที" อยู่แล้ว · debounce นี้คุมเฉพาะการ "หยุด engine" (กระทบการคุมงานจริง)
     const nb = blockedNow();
     _blockStreak = nb ? _blockStreak + 1 : 0;
@@ -208,7 +208,7 @@ const datalogManager = new DatalogManager(engine, chartStore, dbManager);
 const QueryBufferManager = require('./queryBufferManager');
 const queryBufferManager = new QueryBufferManager(dbManager, engine);
 const PowerManager = require('./powerManager');
-const powerManager = new PowerManager(engine);
+const powerManager = new PowerManager(engine, datalogManager);   // datalogManager: record ต่อเนื่อง (auto-datalog ต่อมิเตอร์)
 const TimeSyncManager = require('./timeSyncManager');
 const timeSyncManager = new TimeSyncManager({ tagEngine: engine,
   onLog: (detail) => { try { activityLog.log({ category: 'system', action: 'timesync', detail, user: 'timesync', actorType: 'system' }); } catch (_) {} } });
@@ -1651,8 +1651,34 @@ app.post('/api/datalogs/:id/annotation', async (req, res) => {
 });
 
 // ── Power meters — คำนวณ kW/kWh/ค่าไฟ จาก tag (1ph/3ph · vi/kw/kwh) → virtual tag + หน้า Power ──
-app.get('/api/powermeters', (_req, res) => res.json({ ok: true, meters: powerManager.list() }));
+app.get('/api/powermeters', (_req, res) => res.json({ ok: true, meters: powerManager.list(), tou: powerManager.getTou() }));
 app.get('/api/powermeters/live', (_req, res) => res.json({ ok: true, meters: powerManager.live() }));
+// TOU config (global — สัญญาไฟของโรงงาน) + สรุปรายวัน/รายเดือน (รอบบิล) + export CSV
+app.put('/api/powermeters/tou', (req, res) => {
+  try {
+    const t = powerManager.setTou(req.body || {});
+    logActivity(req, { category: 'config', action: 'power_tou', detail: `peak=${t.rates.peak} offpeak=${t.rates.offpeak} ft=${t.ft} billingDay=${t.billingDay}` });
+    res.json({ ok: true, tou: t });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.get('/api/powermeters/summary', (req, res) => {
+  try { res.json({ ok: true, rows: powerManager.summary(req.query.from || null, req.query.to || null, req.query.meter || null) }); }
+  catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.get('/api/powermeters/summary/monthly', (req, res) => {
+  try { res.json({ ok: true, ...powerManager.monthly(req.query.months, req.query.meter || null) }); }
+  catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.get('/api/powermeters/summary/export', (req, res) => {
+  try {
+    const rows = powerManager.summary(req.query.from || null, req.query.to || null, req.query.meter || null);
+    const head = 'date,meter_id,meter_name,kwh_total,kwh_peak,kwh_offpeak,cost,kw_max';
+    const body = rows.map((r) => [r.date, r.meterId, JSON.stringify(r.meterName || ''), r.kwhTotal.toFixed(4), r.kwhPeak.toFixed(4), r.kwhOffpeak.toFixed(4), r.cost.toFixed(2), r.kwMax.toFixed(3)].join(',')).join('\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="power-summary${req.query.from ? `_${req.query.from}` : ''}${req.query.to ? `_${req.query.to}` : ''}.csv"`);
+    res.send(`﻿${head}\n${body}\n`);
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
 
 // ── Time sync (peer clock) — master expose เวลา · follower poll มาแก้ (ดู docs/TIME-SYNC-PLAN.md) ──
 app.get('/api/time', (_req, res) => {   // master endpoint (exempt token+license · ทุก node เปิดได้)

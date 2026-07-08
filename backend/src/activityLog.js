@@ -103,10 +103,12 @@ class ActivityLog {
   }
 
   // cutoff = เวลาเริ่มของ "N เดือนก่อนจากตอนนี้" (เก็บ N เดือนล่าสุด · เก่ากว่านี้ลบ) · 0/ว่าง = ไม่ลบ
-  _cutoffMs(months) {
+  _cutoffMs(months, nowMs) {
     const m = Math.floor(Number(months) || 0);
     if (m <= 0) return 0;
-    const d = new Date(); d.setMonth(d.getMonth() - m);
+    const d = nowMs != null ? new Date(nowMs) : new Date(); const day = d.getDate();
+    d.setDate(1); d.setMonth(d.getMonth() - m);                                          // setDate(1) ก่อน = กัน setMonth ล้น (วันที่ 31 → เดือนที่ไม่มี 31 เด้งข้ามเดือน ลบเกิน)
+    d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));   // คืน day เดิม · clamp ตามจำนวนวันของเดือนปลายทาง
     return d.getTime();
   }
 

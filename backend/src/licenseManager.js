@@ -138,7 +138,12 @@ class LicenseManager {
   }
 
   setLicenseFile(p) { this._licenseFile = p; this._cache = null; }
-  refresh() { this._cache = null; return this.verify(); }   // re-verify สด (hot-swap: เพิ่ม/ถอด license ไม่ต้อง restart)
+  refresh() {   // re-verify สด (hot-swap: เพิ่ม/ถอด license ไม่ต้อง restart)
+    this._cache = null; const v = this.verify();
+    const newSig = (this._cache && this._cache._lockSig) || '';
+    if (this._instanceLock && this._lockAcqSig !== newSig) this.releaseInstanceLock();   // sig ใบเปลี่ยน (hot-swap/เพิ่ม DLC) → port ชุดใหม่ · ปล่อย lock เก่า ให้ acquire รอบถัดไปผูกใบใหม่ (reconcile)
+    return v;
+  }
   licenseFile() {
     if (this._licenseFile) return this._licenseFile;
     try { return require('./csvUtil').configFile('license.key'); } catch (_) { return null; }
@@ -256,26 +261,55 @@ class LicenseManager {
   //   ผูก TCP port บน 127.0.0.1 ที่ derive จาก "ลายเซ็นใบฐาน" → instance ที่ 2 (copy โฟลเดอร์ ใบเดียวกัน)
   //   bind ไม่ได้ (EADDRINUSE) = ถือว่า license ถูกใช้อยู่ · ใบต่างกัน = port ต่างกัน (ซื้อ 2 ใบรัน 2 instance ได้)
   //   process ตาย = OS ปล่อย port เอง (ไม่มี stale lock · ไม่ต้อง heartbeat) · dep-inject net/portFn ได้ (เทส)
-  _lockPort() {
+  _lockPortAt(k) {
     const sig = (this._cache && this._cache._lockSig) || '';
     if (!sig) return null;
-    const h = crypto.createHash('sha256').update('kpe-lock|' + sig).digest();
-    return 41000 + (h.readUInt32BE(0) % 20000);   // 41000..60999 (เลี่ยง port ระบบ/แอป)
+    const h = crypto.createHash('sha256').update('kpe-lock|' + sig + '|' + k).digest();
+    return 41000 + (h.readUInt32BE(0) % 20000);   // 41000..60999 · k = ลำดับ candidate (เลี่ยงชนโปรเซสอื่นในช่วง ephemeral)
+  }
+  _lockPort() { return this._lockPortAt(0); }   // port ฐาน (แสดงผล/เทส)
+  // ผูก server บน port (127.0.0.1) → { ok:true, srv } | { ok:false, code }
+  _bindPort(netMod, port) {
+    return new Promise((resolve) => {
+      const srv = netMod.createServer((s) => { try { s.end('kpe-license-lock'); } catch (_) {} });
+      srv.once('error', (e) => { try { srv.close(); } catch (_) {} resolve({ ok: false, code: (e && e.code) || 'ERR' }); });
+      srv.listen(port, '127.0.0.1', () => { try { srv.unref(); } catch (_) {} resolve({ ok: true, srv }); });
+    });
+  }
+  // connect เช็ค banner: port ที่ชนเป็น KPE lock จริงไหม (กันเข้าใจผิดว่าใบซ้ำ ทั้งที่โปรเซสอื่นบังเอิญจับ port)
+  _probeBanner(netMod, port) {
+    return new Promise((resolve) => {
+      let done = false, buf = '', sock;
+      const finish = (v) => { if (done) return; done = true; try { sock && sock.destroy(); } catch (_) {} resolve(v); };
+      try { sock = netMod.connect({ port, host: '127.0.0.1' }); } catch (_) { return resolve(false); }
+      sock.setTimeout(700, () => finish(false));
+      sock.on('data', (d) => { buf += d.toString('utf8'); if (buf.includes('kpe-license-lock')) finish(true); });
+      sock.on('error', () => finish(false));
+      sock.on('close', () => finish(buf.includes('kpe-license-lock')));
+    });
   }
   // ยึด lock ตอน start (เรียกครั้งเดียวจาก backend) → { held, port, reason }
+  //   bind ได้ = instance เดียว · EADDRINUSE + banner KPE = ใบซ้ำจริง (บล็อก) · EADDRINUSE โปรเซสอื่น = ข้าม port ถัดไป
+  //   ทุก candidate ชนภายนอก (ไม่เจอ KPE banner สักตัว) → fail-open skip (กันล็อกลูกค้าที่รันถูกต้องเพราะ port ephemeral ชน)
   async acquireInstanceLock(net) {
-    if (this._instanceLock && (this._instanceLock.held || this._instanceLock.skipped)) return this._instanceLock;   // สำเร็จแล้ว = idempotent · ล้มเหลว = ให้ลองใหม่ได้ (instance เก่าตาย)
+    if (this._instanceLock && (this._instanceLock.held || this._instanceLock.skipped)) return this._instanceLock;   // สำเร็จ/skip แล้ว = idempotent · ล้มเหลว = ลองใหม่ได้
     if (!this._cache) this.verify();
     const c = this._cache || {};   // ใช้ raw validity (ไม่ใช่ status ที่รวม lock แล้ว = feedback loop)
+    this._lockAcqSig = c._lockSig || '';   // sig ใบที่การตัดสินใจ lock รอบนี้อ้างอิง (refresh เทียบ → hot-swap ใบ = ปล่อย lock เก่า)
     if (!c.enforced || !c.ok) return (this._instanceLock = { held: true, skipped: true, port: null });   // dev/ใบ invalid → ไม่ต้องล็อก (gate อื่นจัดการ)
-    const port = this._lockPort();
-    if (!port) return (this._instanceLock = { held: true, skipped: true, port: null });
+    if (!this._lockPortAt(0)) return (this._instanceLock = { held: true, skipped: true, port: null });
     const netMod = net || require('net');
-    return await new Promise((resolve) => {
-      const srv = netMod.createServer((s) => { try { s.end('kpe-license-lock'); } catch (_) {} });
-      srv.once('error', (e) => resolve(this._instanceLock = { held: false, port, reason: e && e.code === 'EADDRINUSE' ? 'license-in-use' : 'lock-error' }));
-      srv.listen(port, '127.0.0.1', () => { try { srv.unref(); } catch (_) {} this._lockSrv = srv; resolve(this._instanceLock = { held: true, port }); });
-    });
+    const CANDIDATES = 6;
+    for (let k = 0; k < CANDIDATES; k++) {
+      const port = this._lockPortAt(k);
+      const r = await this._bindPort(netMod, port);
+      if (r.ok) { this._lockSrv = r.srv; return (this._instanceLock = { held: true, port }); }   // ยึดได้ = instance เดียว
+      if (r.code === 'EADDRINUSE' && (await this._probeBanner(netMod, port))) {
+        return (this._instanceLock = { held: false, port, reason: 'license-in-use' });   // KPE instance อื่นถือ lock ใบนี้อยู่ = บล็อก
+      }
+      // ไม่ใช่ KPE (โปรเซสอื่นจับ port) หรือ error อื่น (EACCES ฯลฯ) → ลอง port ถัดไป
+    }
+    return (this._instanceLock = { held: true, skipped: true, port: null, reason: 'lock-skipped' });   // ชนภายนอกทุก candidate → ไม่ฟันธงว่าซ้ำ
   }
   releaseInstanceLock() { try { this._lockSrv && this._lockSrv.close(); } catch (_) {} this._lockSrv = null; this._instanceLock = null; }
   instanceLocked() { return !!(this._instanceLock && this._instanceLock.held === false); }   // ใบถูกใช้โดย instance อื่น
