@@ -8,6 +8,7 @@ const _pgPools    = new Map();
 const _mssqlPools = new Map();
 const _mysqlPools = new Map();
 const _mongoClients = new Map();
+let _pgTypesSet = false;   // ตั้ง type parser ของ pg ครั้งเดียว (TIMESTAMP without tz → อ่านเป็น UTC)
 
 // cache key — รวม credential/option ที่มีผลต่อ connection ด้วย
 //   (เดิมไม่รวม password/ssl → เปลี่ยนรหัสแล้ว pool เก่ายังใช้รหัสเดิม — audit MEDIUM)
@@ -21,7 +22,15 @@ function _key(conn) {
 
 // ── PostgreSQL ────────────────────────────────────────────────────────────
 async function pgQuery(conn, sql, params = []) {
-  const { Pool } = require('pg');
+  const pg = require('pg');
+  if (!_pgTypesSet) {
+    // TIMESTAMP without time zone (oid 1114) — เราเขียนเป็น UTC wall-clock เสมอ (tsVal → ISO 'Z' · PG ตัด tz เก็บ naive)
+    //   default pg parse naive เป็น "local ของ process" → เพี้ยนตาม TZ เครื่อง · บังคับอ่านเป็น UTC ให้ตรงกับที่เขียน
+    //   (ข้อมูลเดิมถูกเก็บเป็น UTC wall-clock อยู่แล้ว → อ่านเป็น UTC = ถูกทันที ไม่ต้อง migrate)
+    try { pg.types.setTypeParser(1114, (s) => (s ? new Date(String(s).replace(' ', 'T') + 'Z') : s)); } catch (_) {}
+    _pgTypesSet = true;
+  }
+  const { Pool } = pg;
   const key = _key(conn);
   let pool = _pgPools.get(key);
   if (!pool) {
@@ -59,6 +68,7 @@ async function mssqlQuery(conn, sql, params = []) {
       options:  {
         encrypt: conn.encrypt ?? false,
         trustServerCertificate: conn.trustServerCertificate ?? true,
+        useUTC: true,   // อ่าน/เขียน DATETIME เป็น UTC (default ของ tedious อยู่แล้ว · ใส่ชัดให้ตรงกับ tsVal)
       },
     };
     // database ว่าง = ต่อ default DB (ใช้ fully-qualified ใน query เช่น [DB].[dbo].[tbl])
@@ -92,6 +102,7 @@ async function mysqlQuery(conn, sql, params = []) {
       connectionLimit: conn.max || 5,
       connectTimeout: 5000,
       waitForConnections: true,
+      timezone: 'Z',   // อ่าน/เขียน DATETIME เป็น UTC (ตรงกับ tsVal) — ไม่ให้ mysql2 ตีความ naive เป็น local ของ process
     };
     if (conn.database) cfg.database = conn.database;
     pool = mysql.createPool(cfg);
