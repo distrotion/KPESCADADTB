@@ -144,9 +144,15 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);
     const j = (await this.pool.query(`SELECT steps FROM ${this._t(line, 'job')} WHERE job_key=$1`, [jobKey])).rows[0];
     return j ? this._steps(j.steps) : [];
   }
-  async listEvents({ line = null, limit = 200 } = {}) {
+  async listEvents({ line = null, jobKey = null, type = null, order = 'desc', limit = 200 } = {}) {
     if (!line) return [];
-    return (await this.pool.query(`SELECT * FROM ${this._t(line, 'event')} ORDER BY event_id DESC LIMIT $1`, [limit])).rows;
+    const w = []; const p = [];
+    if (jobKey) { p.push(jobKey); w.push(`job_key=$${p.length}`); }
+    if (type)   { p.push(type);   w.push(`type=$${p.length}`); }
+    const ord = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    p.push(limit);
+    const where = w.length ? `WHERE ${w.join(' AND ')}` : '';
+    return (await this.pool.query(`SELECT * FROM ${this._t(line, 'event')} ${where} ORDER BY event_id ${ord} LIMIT $${p.length}`, p)).rows;
   }
 
   // flat view ต่อไลน์ — กาง steps jsonb เป็นคอลัมน์ s<station>_<param>

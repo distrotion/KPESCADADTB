@@ -69,6 +69,8 @@ class ScriptEngine {
     this.defaultTimeout = Math.max(200, parseInt(process.env.KPE_SCRIPT_TIMEOUT_MS) || 5000);
     this._running   = new Set(); // scriptId กำลังรัน (กัน scheduled run ซ้อนกันจน worker ทับถม)
     this._timeoutHits = new Map(); // scriptId -> จำนวน timeout ติด ๆ กัน (circuit breaker)
+    this._scriptState = new Map();  // scriptId -> state object (จำค่าข้ามการยิง · §state)
+    this._serialRecBuf = new Map(); // scriptId -> { lines, timer } (trigger serial โหมด record)
     this.maxTimeoutHits = Math.max(1, parseInt(process.env.KPE_SCRIPT_MAX_TIMEOUT_HITS) || 3);
 
     this._load();
@@ -165,15 +167,46 @@ class ScriptEngine {
 
   // Called by server เมื่อมี serial input ดิบ (for 'serial' triggers)
   //   trigger ในสคริปต์ = { type:'serial', deviceId? }  · ว่าง deviceId = ทุก serial device
-  onSerialData(deviceId, raw) {
+  onSerialData(deviceId, raw, meta) {
     for (const s of this.scripts) {
       if (!s.enabled) continue;
       if (s.trigger?.type !== 'serial') continue;
       const t = s.trigger;
-      if (!t.deviceId || t.deviceId === deviceId) {
-        this._run(s, { deviceId, raw, value: raw }).catch(() => {});   // trigger.raw = บรรทัดดิบ
+      // serial_bridge: กรองตามทิศได้ (trigger.dir = 'a2b'|'b2a' · ว่าง = ทุกทิศ)
+      if (t.dir && meta && meta.dir && t.dir !== meta.dir) continue;
+      if (t.deviceId && t.deviceId !== deviceId) continue;
+      if (t.record) {
+        this._serialRecordFeed(s, deviceId, raw, meta);   // โหมด record — สะสมหลายบรรทัด → ยิงครั้งเดียวต่อ record
+      } else {
+        // trigger.raw = บรรทัดดิบ · bridge เพิ่ม dir/hex/port/ts ให้ script ใช้
+        this._run(s, { deviceId, raw, value: raw, ...(meta || {}) }).catch(() => {});
       }
     }
+  }
+
+  // โหมด record ของ trigger serial — สะสมบรรทัดต่อ script จนครบขอบเขต แล้วยิง 1 ครั้ง (trigger.raw = ทั้ง record · trigger.lines = array)
+  _serialRecordFeed(s, deviceId, raw, meta) {
+    const t = s.trigger || {};
+    const line = String(raw == null ? '' : raw).trim();
+    let b = this._serialRecBuf.get(s.id);
+    if (!b) { b = { lines: [], timer: null }; this._serialRecBuf.set(s.id, b); }
+    const flush = () => {
+      if (b.timer) { clearTimeout(b.timer); b.timer = null; }
+      if (!b.lines.length) return;
+      const lines = b.lines.slice(); b.lines = [];
+      const rec = lines.join('\n');
+      this._run(s, { deviceId, raw: rec, value: rec, lines, ...(meta || {}) }).catch(() => {});
+    };
+    const reTest = (pat) => { if (!pat) return false; try { return new RegExp(pat).test(line); } catch (_) { return false; } };
+    if (line) {
+      if (t.recordStart && b.lines.length && reTest(t.recordStart)) flush();   // เจอ start ใหม่ → flush record เดิม
+      b.lines.push(line);
+      if (t.recordEnd && reTest(t.recordEnd)) { flush(); return; }             // เจอ end → flush (รวมบรรทัดนี้)
+      const max = Number(t.recordMaxLines) || 0;
+      if (max && b.lines.length >= max) { flush(); return; }
+    }
+    const sil = Number(t.recordSilenceMs) || 0;                                // เงียบเกิน N ms → flush
+    if (sil) { if (b.timer) clearTimeout(b.timer); b.timer = setTimeout(flush, sil); if (b.timer.unref) b.timer.unref(); }
   }
 
   _activate(s) {
@@ -202,6 +235,9 @@ class ScriptEngine {
     if (iv) { clearInterval(iv); this.intervals.delete(id); }
     const task = this.crons.get(id);
     if (task) { try { task.stop(); } catch (_) {} this.crons.delete(id); }
+    this._scriptState.delete(id);   // §state: แก้/ปิด script → เริ่ม state ใหม่ (กัน state ค้างจากโค้ดเดิม)
+    const rb = this._serialRecBuf.get(id); if (rb && rb.timer) clearTimeout(rb.timer);
+    this._serialRecBuf.delete(id);
   }
 
   _compile(s) {
@@ -215,7 +251,7 @@ class ScriptEngine {
 
   // ── Sandbox: รัน code ใน worker thread + timeout (terminate ได้แม้ติด infinite loop) ──
   //   onLog(level,msg) เรียกต่อ log แต่ละบรรทัด · คืน { ok, ms, ret, error }
-  _runInWorker(code, trigger, { timeoutMs, onLog } = {}) {
+  _runInWorker(code, trigger, { timeoutMs, onLog, state } = {}) {
     const t0 = Date.now();
     const tmo = Math.max(200, timeoutMs || this.defaultTimeout);
     // snapshot tag ปัจจุบัน (tag()/tags/allTags ใน worker อ่านจากชุดนี้)
@@ -235,7 +271,7 @@ class ScriptEngine {
       };
 
       try {
-        worker = new Worker(WORKER_FILE, { workerData: { code: code || '', trigger: trigger || null, snapshot } });
+        worker = new Worker(WORKER_FILE, { workerData: { code: code || '', trigger: trigger || null, snapshot, state: state || {} } });
       } catch (e) {
         return resolve({ ok: false, ms: Date.now() - t0, error: 'worker spawn: ' + e.message });
       }
@@ -257,7 +293,7 @@ class ScriptEngine {
             if (!settled) worker.postMessage({ type: 'rpcResult', id: m.id, ok: false, error: (e && e.message) || String(e) });
           }
         } else if (m.type === 'done') {
-          done({ ok: true, ret: m.ret, resp: m.resp || null });
+          done({ ok: true, ret: m.ret, resp: m.resp || null, state: m.state });
         } else if (m.type === 'error') {
           done({ ok: false, error: m.error });
         }
@@ -341,7 +377,9 @@ class ScriptEngine {
       const r = await this._runInWorker(s.code, trigger, {
         timeoutMs: s.timeoutMs,
         onLog: (level, msg) => this._log(s.id, level, msg),
+        state: this._scriptState.get(s.id) || {},   // §state: จำค่าข้ามการยิง (สะสม record หลายบรรทัด ฯลฯ)
       });
+      if (r.ok && r.state !== undefined) this._scriptState.set(s.id, r.state);   // เก็บ state ที่ script แก้ไว้รอบหน้า
       this.lastRun.set(s.id, { t: Date.now(), ok: r.ok, ms: r.ms, error: r.ok ? null : r.error });
       if (!r.ok) this._log(s.id, 'error', r.error);
       this._logRunActivity(s, trigger, r);

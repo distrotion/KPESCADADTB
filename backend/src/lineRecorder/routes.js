@@ -56,7 +56,22 @@ function mountLineRecorder(app, manager) {
     try { const j = await manager.job(decodeURIComponent(req.params.jobKey)); if (!j) return res.status(404).json({ ok: false, error: 'ไม่พบ job' }); res.json({ ok: true, job: j }); } catch (e) { se(res, e); }
   });
   app.get('/api/line-recorder/events', async (req, res) => {
-    try { res.json({ ok: true, events: await manager.events({ line: req.query.line || null, limit: Number(req.query.limit) || 200 }) }); } catch (e) { se(res, e); }
+    try { res.json({ ok: true, events: await manager.events({ line: req.query.line || null, jobKey: req.query.jobKey || null, type: req.query.type || null, order: req.query.order || 'desc', limit: Number(req.query.limit) || 200 }) }); } catch (e) { se(res, e); }
+  });
+  // เส้นทางจริง (STEP เรียงตามลำดับ · รวม revisit/ย้อนบ่อ) ต่อ 1 งาน
+  app.get('/api/line-recorder/jobs/:jobKey/path', async (req, res) => {
+    try { res.json({ ok: true, path: await manager.jobPath(decodeURIComponent(req.params.jobKey)) }); } catch (e) { se(res, e); }
+  });
+  // export history (long CSV) — 1 แถว/การเข้าบ่อ · ครบทุกรอบ + ทุก param
+  app.get('/api/line-recorder/export', async (req, res) => {
+    try {
+      const q = req.query;
+      const csv = await manager.exportHistory({ line: q.line || null, from: q.from ? Number(q.from) : null, to: q.to ? Number(q.to) : null, status: q.status || null, q: q.q || null, limit: Number(q.limit) || 5000 });
+      const name = `line-history-${q.line || 'all'}-${Date.now()}.csv`;
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${name.replace(/[^A-Za-z0-9._-]/g, '_')}"`);
+      res.send('﻿' + csv);   // BOM → Excel เปิด UTF-8/ไทย ถูก
+    } catch (e) { se(res, e); }
   });
 
   // ingest (ทดสอบ/จำลอง PLC · mode=tag/array) — body: { line, raw:[...], ts? }

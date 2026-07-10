@@ -21,7 +21,8 @@
 const { parentPort, workerData } = require('worker_threads');
 const { dateExpr } = require('./placeholderResolver');   // pure/local — date คำนวณในเธรดได้ (tz เดียวกับ main · ไม่ต้อง RPC)
 
-const { code, trigger, snapshot } = workerData;
+const { code, trigger, snapshot, state } = workerData;
+const _state = (state && typeof state === 'object') ? state : {};   // จำค่าข้ามการยิง (main ส่งเข้า/คืนออก)
 const tagList = Array.isArray(snapshot) ? snapshot : [];
 
 // HTTP trigger: respond() ตั้งค่า response ที่ HTTP handler จะส่งกลับ (status/headers/body)
@@ -116,6 +117,7 @@ function buildContext() {
     },
 
     trigger: trigger || null,
+    state: _state,   // object จำค่าข้ามการยิง (สะสม/นับ/ประกอบ record หลายบรรทัด) — main persist ให้
 
     db: {
       query: (name, sql, params) => rpc('db.query', [name, sql, params]),
@@ -217,7 +219,9 @@ function buildContext() {
       try { respOut = { ..._resp, body: _resp.body === undefined ? null : JSON.parse(JSON.stringify(_resp.body)) }; }
       catch (_) { respOut = { ..._resp, body: String(_resp.body) }; }
     }
-    parentPort.postMessage({ type: 'done', ret: retOut, resp: respOut });
+    let stateOut = {};
+    try { stateOut = JSON.parse(JSON.stringify(_state)); } catch (_) { stateOut = {}; }   // คืน state ที่ script แก้ → main จำไว้รอบหน้า
+    parentPort.postMessage({ type: 'done', ret: retOut, resp: respOut, state: stateOut });
   } catch (e) {
     parentPort.postMessage({ type: 'error', error: (e && e.message) ? e.message : String(e) });
   }

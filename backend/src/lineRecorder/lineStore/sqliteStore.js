@@ -135,9 +135,15 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);`;
     const j = this.db.prepare(`SELECT steps FROM ${this._t(this._lineOf(jobKey), 'job')} WHERE job_key=?`).get(jobKey);
     return j ? this._steps(JSON.parse(j.steps || '{}')) : [];
   }
-  async listEvents({ line = null, limit = 200 } = {}) {
+  async listEvents({ line = null, jobKey = null, type = null, order = 'desc', limit = 200 } = {}) {
     if (!line) return [];
-    return this.db.prepare(`SELECT * FROM ${this._t(line, 'event')} ORDER BY event_id DESC LIMIT ?`).all(limit)
+    const w = []; const p = [];
+    if (jobKey) { w.push('job_key=?'); p.push(jobKey); }
+    if (type)   { w.push('type=?');   p.push(type); }
+    const ord = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    p.push(limit);
+    const where = w.length ? `WHERE ${w.join(' AND ')}` : '';
+    return this.db.prepare(`SELECT * FROM ${this._t(line, 'event')} ${where} ORDER BY event_id ${ord} LIMIT ?`).all(...p)
       .map((r) => { let d = {}; try { d = JSON.parse(r.data || '{}'); } catch (_) {} return { ...r, data: d }; });
   }
 

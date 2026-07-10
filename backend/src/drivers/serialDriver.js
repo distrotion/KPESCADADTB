@@ -28,12 +28,9 @@
  *   ค่าที่ return จะถูก map เข้า tag ที่ id ตรงกัน (หรือ tag.jsonKey)
  * ════════════════════════════════════════════════════════════════════════════
  */
-const vm = require('vm');
-const { SerialPort }    = require('serialport');
-const { ReadlineParser }          = require('@serialport/parser-readline');
-const { InterByteTimeoutParser }  = require('@serialport/parser-inter-byte-timeout');
-
-const _isNumStr = (s) => /^[\s+\-]?[\d.,eE+\-]+$/.test(String(s).trim());
+const { SerialPort } = require('serialport');
+const framing = require('./serialFraming');                          // framing แชร์ (delimiter/timeout/start)
+const { compileTransform, parseFrame } = require('./serialParse');   // parse 6 โหมด แชร์
 
 class SerialDriver {
   constructor(device, onTagUpdate, onRaw) {
@@ -51,18 +48,7 @@ class SerialDriver {
   }
 
   _compileTransform() {
-    const code = this.device.connection.transform;
-    if (!code) return;
-    try {
-      // wrap เป็น function body แล้ว compile ครั้งเดียว
-      this._script = new vm.Script(
-        `(function(msg, parseNum){ ${code}\n})`,
-        { filename: `transform_${this.device.id}.js` }
-      );
-    } catch (err) {
-      console.error(`[Serial] Transform compile error (${this.device.name}):`, err.message);
-      this._script = null;
-    }
+    this._script = compileTransform(this.device.connection.transform, this.device.id);
   }
 
   async connect() {
@@ -80,20 +66,8 @@ class SerialDriver {
         autoOpen: false,
       });
 
-      // ── Frame mode: แบ่งข้อความเข้าอย่างไร ───────────────────────────────
-      //   delimiter (default) = ตัด ณ ตัวอักษรคั่น เช่น \n
-      //   timeout / silence   = สะสม bytes แล้วตัดเมื่อเงียบ X ms (ไม่มี \n)
-      const frameMode = (c.frameMode || 'delimiter').toLowerCase();
-      let parser;
-      if (frameMode === 'timeout' || frameMode === 'silence') {
-        const interval = c.silenceMs || 50; // ms ที่ถือว่า "เงียบ" แล้วตัดข้อความ
-        parser = new InterByteTimeoutParser({ interval, maxBufferSize: 65536 });
-        console.log(`[Serial] Frame mode: silence/timeout (${interval}ms) — ${this.device.name}`);
-      } else {
-        let delimiter = c.delimiter || '\n';
-        delimiter = delimiter.replace(/\\r/g, '\r').replace(/\\n/g, '\n').replace(/\\t/g, '\t');
-        parser = new ReadlineParser({ delimiter });
-      }
+      // ── Frame mode: แบ่งข้อความเข้าอย่างไร (delimiter/timeout/start) — ผ่าน module แชร์ ──
+      const parser = framing.makeParser(c);
       this.port.pipe(parser);
 
       this.port.on('open',  () => { this.connected = true;  this._clearReconnect(); console.log(`[Serial] Connected: ${this.device.name} @ ${c.port}`); });
@@ -131,99 +105,10 @@ class SerialDriver {
     this._lastLine = line;
     // ส่ง raw line ให้ script trigger 'serial' (ก่อน parse — รับดิบ ๆ)
     if (this.onRaw) { try { this.onRaw(this.device.id, line); } catch (_) {} }
-    const mode = (this.device.connection.parseMode || 'function').toLowerCase();
-
-    try {
-      // ── FUNCTION mode (Node-RED style) ──────────────────────────────────
-      if (mode === 'function') {
-        if (!this._script) return;
-        // รัน transform ใน sandbox แยก context (กัน global รั่ว)
-        const sandbox = {
-          msg:      line,
-          parseNum: (s) => { const n = parseFloat(s); return isNaN(n) ? null : n; },
-          parseInt, parseFloat, Math, JSON, Number, String, isNaN,
-          console: { log: (...a) => console.log(`[Serial:${this.device.id}]`, ...a) },
-        };
-        const fn = this._script.runInNewContext(sandbox, { timeout: 200 });
-        const result = fn(line, sandbox.parseNum);
-        if (result && typeof result === 'object') {
-          for (const tag of this.device.tags) {
-            const key = tag.jsonKey || tag.id;
-            if (result[key] !== undefined) {
-              let v = result[key];
-              if (tag.scale && typeof v === 'number') v = v * tag.scale;
-              this.onTagUpdate(this.device.id, tag.id, v);
-            }
-          }
-        }
-        return;
-      }
-
-      // ── REGEX mode ──────────────────────────────────────────────────────
-      if (mode === 'regex') {
-        for (const tag of this.device.tags) {
-          if (!tag.regex) continue;
-          let re; try { re = new RegExp(tag.regex); } catch (_) { continue; }
-          const m = line.match(re); if (!m) continue;
-          const g = (tag.regexGroup != null) ? tag.regexGroup : (m.length > 1 ? 1 : 0);
-          let raw = m[g]; if (raw === undefined) continue;
-          let v = raw;
-          if (_isNumStr(raw)) { v = parseFloat(raw); if (tag.scale) v *= tag.scale; }
-          this.onTagUpdate(this.device.id, tag.id, v);
-        }
-        return;
-      }
-
-      // ── CSV mode ────────────────────────────────────────────────────────
-      if (mode === 'csv') {
-        const sep = this.device.connection.csvSeparator || ',';
-        const parts = line.split(sep);
-        for (const tag of this.device.tags) {
-          const idx = tag.csvIndex ?? -1;
-          if (idx >= 0 && idx < parts.length) {
-            let v = parseFloat(parts[idx]);
-            if (!isNaN(v)) { if (tag.scale) v *= tag.scale; this.onTagUpdate(this.device.id, tag.id, v); }
-          }
-        }
-        return;
-      }
-
-      // ── JSON / keyvalue ─────────────────────────────────────────────────
-      let parsed = {};
-      if (mode === 'json') {
-        parsed = JSON.parse(line);
-      } else if (mode === 'keyvalue') {
-        const sep = this.device.connection.kvPairSep || ';';
-        const kv  = this.device.connection.kvSep     || '=';
-        for (const pair of line.split(sep)) {
-          const i = pair.indexOf(kv);
-          if (i > 0) parsed[pair.slice(0, i).trim()] = pair.slice(i + 1).trim();
-        }
-      } else {
-        // raw → ทั้งบรรทัดไป tag แรก
-        if (this.device.tags.length > 0)
-          this.onTagUpdate(this.device.id, this.device.tags[0].id, line);
-        return;
-      }
-      for (const tag of this.device.tags) {
-        const key = tag.jsonKey || tag.id;
-        if (parsed[key] !== undefined) {
-          let v = parsed[key];
-          if (typeof v === 'string' && _isNumStr(v)) v = parseFloat(v);
-          if (tag.scale && typeof v === 'number') v *= tag.scale;
-          this.onTagUpdate(this.device.id, tag.id, v);
-        }
-      }
-    } catch (err) {
-      // ignore noise / transform runtime error (log สั้น ๆ)
-      if (mode === 'function') {
-        // throttle error log
-        if (!this._lastErr || Date.now() - this._lastErr > 5000) {
-          console.error(`[Serial] Transform error (${this.device.name}):`, err.message);
-          this._lastErr = Date.now();
-        }
-      }
-    }
+    parseFrame({
+      line, cfg: this.device.connection, tags: this.device.tags, script: this._script,
+      onTag: this.onTagUpdate, deviceId: this.device.id, logId: this.device.name || this.device.id,
+    });
   }
 
   write(data) {

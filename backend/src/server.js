@@ -186,10 +186,11 @@ const engine = new TagEngine((deviceId, tagId, value, quality, timestamp) => {
     broadcast({ type: 'device_log', entry });
   }
 });
-// serial input ดิบ → script trigger 'serial' + broadcast ให้ UI listen (debug)
-engine.onSerialRaw = (deviceId, raw) => {
-  if (scriptEngine) scriptEngine.onSerialData(deviceId, raw);
-  broadcast({ type: 'serial_raw', deviceId, raw, t: Date.now() });
+// serial input ดิบ → script trigger 'serial' + broadcast ให้ UI (sniffer console) listen
+//   meta (serial_bridge) = { dir:'a2b'|'b2a', hex, ts, port } · serial_port ธรรมดา = undefined
+engine.onSerialRaw = (deviceId, raw, meta) => {
+  if (scriptEngine) scriptEngine.onSerialData(deviceId, raw, meta);
+  broadcast({ type: 'serial_raw', deviceId, raw, ...(meta || {}), t: (meta && meta.ts) || Date.now() });
 };
 
 // database connection manager
@@ -565,6 +566,27 @@ wss.on('connection', (ws, req) => {
 // REST API
 app.get('/api/devices', (req, res) => {
   res.json(engine.getDevices());
+});
+
+// ── Serial: list พอร์ตที่มีในเครื่อง (ให้ UI เลือกตอนตั้ง serial_port/serial_bridge) ──
+//   คืน "array ล้วน" ตาม contract เดิมของ frontend _getSerialPorts (jsonDecode as List)
+app.get('/api/serial-ports', async (req, res) => {
+  try {
+    const { SerialPort } = require('serialport');
+    const ports = await SerialPort.list();
+    res.json(ports.map((p) => ({
+      path: p.path, manufacturer: p.manufacturer || '', serialNumber: p.serialNumber || '',
+      vendorId: p.vendorId || '', productId: p.productId || '', pnpId: p.pnpId || '',
+    })));
+  } catch (e) { res.json([]); }
+});
+
+// ── Serial Bridge: scrollback frame ล่าสุด (sniffer console ตอนเปิด) ──
+app.get('/api/devices/:id/serial-recent', (req, res) => {
+  const drv = engine.drivers.get(req.params.id);
+  if (!drv || typeof drv.recent !== 'function') return res.json({ ok: true, frames: [] });
+  const limit = Math.min(Number(req.query.limit) || 200, 2000);
+  res.json({ ok: true, frames: drv.recent(limit) });
 });
 
 app.get('/api/values', (req, res) => {

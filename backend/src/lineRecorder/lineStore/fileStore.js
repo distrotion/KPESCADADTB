@@ -86,9 +86,13 @@ class FileStore {
     return arr.slice(0, limit).map((j) => ({ ...j, steps: Object.values(this.db.steps[j.jobKey] || {}).sort((a, b) => (a.seq || 0) - (b.seq || 0)) }));   // แนบ steps (เวลาชุบต่อบ่อ)
   }
   async getSteps(jobKey) { return Object.values(this.db.steps[jobKey] || {}).sort((a, b) => (a.seq || 0) - (b.seq || 0)); }
-  async listEvents({ line = null, limit = 200 } = {}) {
-    let arr = this.db.events; if (line) arr = arr.filter((e) => e.line === line);
-    return arr.slice(-limit).reverse();
+  async listEvents({ line = null, jobKey = null, type = null, order = 'desc', limit = 200 } = {}) {
+    let arr = this.db.events;
+    if (line)   arr = arr.filter((e) => e.line === line);
+    if (jobKey) arr = arr.filter((e) => (e.jobKey || e.job_key) === jobKey);
+    if (type)   arr = arr.filter((e) => e.type === type);
+    const sliced = arr.slice(-limit);
+    return String(order).toLowerCase() === 'asc' ? sliced : sliced.slice().reverse();
   }
   async ensureFlatView() { return null; }   // file = test · ไม่มี view
 

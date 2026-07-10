@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const { loadLineConfigs, saveLineConfig, deleteLineConfig } = require('./lineConfig');
 const { decode } = require('./decoder');
-const { LineEngine } = require('./engine');
+const { LineEngine, checkSpec } = require('./engine');
 const { createLineStore } = require('./lineStore');
 const { PlcSource } = require('./plcSource');
 const { CarrierTracker } = require('./source/carrierTracker');
@@ -341,6 +341,71 @@ class LineRecorderManager {
   async jobs(filter) { const f = filter || {}; const st = f.line ? this._storeFor(this.configs[f.line]) : this._fileStore(); return st.listJobs(f); }
   async job(jobKey) { const line = String(jobKey || '').split('|')[0]; const st = this.configs[line] ? this._storeFor(this.configs[line]) : this._fileStore(); return st.getJob(jobKey); }
   async events(filter) { const f = filter || {}; const st = f.line ? this._storeFor(this.configs[f.line]) : this._fileStore(); return st.listEvents(f); }
+
+  // ── path: STEP events เรียงจริง (รวม revisit/ย้อนบ่อ) + enrich จาก config ──────
+  //   คืน [{ passNo, station, stationName, type, seq, enterTs, exitTs, dwell, inSpec, params, ts }]
+  async jobPath(jobKey) {
+    const line = String(jobKey || '').split('|')[0];
+    const cfg = this.configs[line] || { fields: [], stations: {} };
+    const st = this.configs[line] ? this._storeFor(this.configs[line]) : this._fileStore();
+    const stations = cfg.stations || {};
+    const evs = await st.listEvents({ line, jobKey, type: 'STEP', order: 'asc', limit: 5000 });
+    if (evs && evs.length) {
+      // มี STEP event ต่อบ่อ (บันทึกสด) = เส้นทางจริง รวม revisit/ย้อนบ่อ
+      return evs.map((e, i) => {
+        const d = e.data || e;   // sql/sqlite: nested .data · fileStore: top-level
+        const sc = stations[String(e.station)] || {};
+        const params = d.values || {};
+        return {
+          passNo: i + 1, station: e.station != null ? String(e.station) : '',
+          stationName: sc.name || '', type: sc.type || '', seq: sc.seq != null ? Number(sc.seq) : null,
+          enterTs: d.enterTs != null ? d.enterTs : null, exitTs: d.exitTs != null ? d.exitTs : null,
+          dwell: d.dwell != null ? d.dwell : null,
+          inSpec: checkSpec(cfg.fields, e.station, params).length === 0,   // สด (event ไม่เก็บ inSpec)
+          params, ts: e.ts, source: 'event',
+        };
+      });
+    }
+    // fallback: ไม่มี STEP event (ข้อมูล migrate/bulk เก่า) → ใช้ job.steps (เรียงตาม seq · ไม่มี revisit เพราะข้อมูลไม่มี)
+    const job = await st.getJob(jobKey);
+    const steps = (job && job.steps) || [];
+    return steps.map((s, i) => {
+      const sc = stations[String(s.station)] || {};
+      const params = s.params || {};
+      return {
+        passNo: i + 1, station: s.station != null ? String(s.station) : '',
+        stationName: sc.name || s.name || '', type: sc.type || s.type || '', seq: s.seq != null ? Number(s.seq) : null,
+        enterTs: s.enterTs != null ? s.enterTs : null, exitTs: s.exitTs != null ? s.exitTs : null,
+        dwell: s.dwell != null ? s.dwell : null,
+        inSpec: s.inSpec != null ? s.inSpec : (checkSpec(cfg.fields, s.station, params).length === 0),
+        params, ts: s.ts, source: 'steps',
+      };
+    });
+  }
+
+  // ── export history (long CSV): 1 แถว/การเข้าบ่อ · ครบทุกรอบ (revisit) + ทุก param ──
+  async exportHistory({ line = null, from = null, to = null, status = null, q = null, limit = 5000 } = {}) {
+    const cfg = (line && this.configs[line]) || { fields: [], stations: {} };
+    const jobFields  = (cfg.fields || []).filter((f) => f.scope === 'job').map((f) => f.key);
+    const stepFields = (cfg.fields || []).filter((f) => f.scope !== 'job').map((f) => f.key);
+    const jobs = await this.jobs({ line, from, to, status, q, limit });
+    const tz = (v) => (v == null ? '' : new Date(Number(v)).toLocaleString('sv-SE', { timeZone: 'Asia/Bangkok' }));
+    const esc = (v) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const cols = ['job_key', 'carrier', 'date_key', 'status', ...jobFields, 'pass_no', 'station', 'station_name', 'enter', 'exit', 'dwell_s', 'in_spec', ...stepFields];
+    const rows = [cols.join(',')];
+    for (const j of (jobs || [])) {
+      const jk = j.jobKey || j.job_key;
+      const header = j.data || j.header || {};
+      const base = [jk, j.carrier, j.dateKey || j.date_key, j.status, ...jobFields.map((k) => header[k])];
+      const path = await this.jobPath(jk);
+      if (!path.length) { rows.push([...base, '', '', '', '', '', '', ...stepFields.map(() => '')].map(esc).join(',')); continue; }
+      for (const p of path) {
+        rows.push([...base, p.passNo, p.station, p.stationName, tz(p.enterTs), tz(p.exitTs), p.dwell, p.inSpec ? 1 : 0,
+          ...stepFields.map((k) => (p.params[k] != null ? p.params[k] : ''))].map(esc).join(','));
+      }
+    }
+    return rows.join('\n');
+  }
 }
 
 module.exports = { LineRecorderManager };
