@@ -362,7 +362,8 @@ class LineRecorderManager {
           enterTs: d.enterTs != null ? d.enterTs : null, exitTs: d.exitTs != null ? d.exitTs : null,
           dwell: d.dwell != null ? d.dwell : null,
           inSpec: checkSpec(cfg.fields, e.station, params).length === 0,   // สด (event ไม่เก็บ inSpec)
-          params, ts: e.ts, source: 'event',
+          params, stats: d.stats || null,   // min/max/avg ต่อ param (เมื่อเปิด track)
+          ts: e.ts, source: 'event',
         };
       });
     }
@@ -378,7 +379,7 @@ class LineRecorderManager {
         enterTs: s.enterTs != null ? s.enterTs : null, exitTs: s.exitTs != null ? s.exitTs : null,
         dwell: s.dwell != null ? s.dwell : null,
         inSpec: s.inSpec != null ? s.inSpec : (checkSpec(cfg.fields, s.station, params).length === 0),
-        params, ts: s.ts, source: 'steps',
+        params, stats: s.stats || null, ts: s.ts, source: 'steps',
       };
     });
   }
@@ -388,20 +389,24 @@ class LineRecorderManager {
     const cfg = (line && this.configs[line]) || { fields: [], stations: {} };
     const jobFields  = (cfg.fields || []).filter((f) => f.scope === 'job').map((f) => f.key);
     const stepFields = (cfg.fields || []).filter((f) => f.scope !== 'job').map((f) => f.key);
+    // field ที่เปิด track → เพิ่มคอลัมน์ <key>_min / <key>_max
+    const statKeys = (cfg.fields || []).filter((f) => f.scope !== 'job' && f.track && (f.track.minMax || f.track.summary === 'avg')).map((f) => f.key);
+    const statCols = statKeys.flatMap((k) => [`${k}_min`, `${k}_max`]);
     const jobs = await this.jobs({ line, from, to, status, q, limit });
     const tz = (v) => (v == null ? '' : new Date(Number(v)).toLocaleString('sv-SE', { timeZone: 'Asia/Bangkok' }));
     const esc = (v) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    const cols = ['job_key', 'carrier', 'date_key', 'status', ...jobFields, 'pass_no', 'station', 'station_name', 'enter', 'exit', 'dwell_s', 'in_spec', ...stepFields];
+    const cols = ['job_key', 'carrier', 'date_key', 'status', ...jobFields, 'pass_no', 'station', 'station_name', 'enter', 'exit', 'dwell_s', 'in_spec', ...stepFields, ...statCols];
+    const statVals = (p) => statKeys.flatMap((k) => { const s = (p.stats || {})[k]; return [s && s.min != null ? s.min : '', s && s.max != null ? s.max : '']; });
     const rows = [cols.join(',')];
     for (const j of (jobs || [])) {
       const jk = j.jobKey || j.job_key;
       const header = j.data || j.header || {};
       const base = [jk, j.carrier, j.dateKey || j.date_key, j.status, ...jobFields.map((k) => header[k])];
       const path = await this.jobPath(jk);
-      if (!path.length) { rows.push([...base, '', '', '', '', '', '', ...stepFields.map(() => '')].map(esc).join(',')); continue; }
+      if (!path.length) { rows.push([...base, '', '', '', '', '', '', ...stepFields.map(() => ''), ...statCols.map(() => '')].map(esc).join(',')); continue; }
       for (const p of path) {
         rows.push([...base, p.passNo, p.station, p.stationName, tz(p.enterTs), tz(p.exitTs), p.dwell, p.inSpec ? 1 : 0,
-          ...stepFields.map((k) => (p.params[k] != null ? p.params[k] : ''))].map(esc).join(','));
+          ...stepFields.map((k) => (p.params[k] != null ? p.params[k] : '')), ...statVals(p)].map(esc).join(','));
       }
     }
     return rows.join('\n');

@@ -28,6 +28,7 @@ function normalizeLineConfig(raw, file) {
     source: _obj(f.source),                                  // {kind:plc|manual|formula, index|expr}
     tag: _obj(f.tag),                                        // {device,tag} — job-field อ่านจาก tag (เช่น barcode)
     spec: _obj(f.spec),                                      // {min,max,warn}
+    track: (() => { const t = _obj(f.track); return { minMax: t.minMax === true, summary: t.summary === 'avg' ? 'avg' : 'last' }; })(),   // เก็บ min/max ระหว่างชุบ + สรุป last(ค่าสุดท้าย)/avg(เฉลี่ย)
     display: { table: true, mimic: false, report: false, order: 0, ..._obj(f.display) },
   })).filter((f) => f.key);
   return {

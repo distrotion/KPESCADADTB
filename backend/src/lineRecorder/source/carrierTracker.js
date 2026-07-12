@@ -24,6 +24,38 @@ function _latch(acc, params) {
   return acc;
 }
 
+// สะสมสถิติ min/max/sum/count ต่อ key ทุก poll ระหว่าง carrier อยู่ในบ่อ (ignore 0/non-finite ตาม latch)
+function _accStats(acc, params) {
+  acc = acc || {};
+  for (const k in (params || {})) {
+    const v = Number(params[k]);
+    if (!Number.isFinite(v) || v === 0) continue;
+    const a = acc[k] || (acc[k] = { min: v, max: v, sum: 0, count: 0 });
+    if (v < a.min) a.min = v;
+    if (v > a.max) a.max = v;
+    a.sum += v; a.count += 1;
+  }
+  return acc;
+}
+
+// สรุปค่าตอน exit ตาม track ของแต่ละ field → { values (last หรือ avg), stats:{key:{min,max,avg,last}} }
+//   default (ไม่ track) = values เดิม 100% · stats = {} (ไม่แนบ · backward compatible)
+function _summarize(cfg, params, stats) {
+  const values = { ...(params || {}) };
+  const out = {};
+  for (const f of ((cfg && cfg.fields) || [])) {
+    const tr = f.track || {};
+    const wantAvg = tr.summary === 'avg';
+    if (!tr.minMax && !wantAvg) continue;
+    const s = stats && stats[f.key];
+    if (!s || !s.count) continue;
+    const avg = Math.round((s.sum / s.count) * 1e6) / 1e6;
+    if (wantAvg) values[f.key] = avg;                          // ค่าที่แสดง/สเปก = ค่าเฉลี่ย (แทนค่าสุดท้าย)
+    out[f.key] = { min: s.min, max: s.max, avg, last: params[f.key] != null ? Number(params[f.key]) : null };
+  }
+  return { values, stats: out };
+}
+
 class CarrierTracker {
   constructor() { this.state = {}; }   // line → { occ:{pos:{carrier,params}}, jobs:{carrier:ctx}, runs:{"date|carrier":n} }
 
@@ -67,6 +99,7 @@ class CarrierTracker {
     const stn = String(p.station);
     const ov = st.oven[stn] || (st.oven[stn] = { c: {}, li: null, lo: null, params: {} });
     ov.params = _latch(ov.params || {}, p.params);   // อุณหภูมิเตา "สด" ทุก poll (latch ค่าล่าสุดที่ ≠ 0) → monitor โชว์ live
+    for (const cr in ov.c) { ov.c[cr].params = _latch(ov.c[cr].params || {}, p.params); ov.c[cr].stats = _accStats(ov.c[cr].stats || {}, p.params); }   // latch ค่าล่าสุด + สะสม min/max/avg ให้ทุก carrier ที่กำลังอบ (เตาเดียวหลายชิ้น = อุณหภูมิเดียว/ช่วงเวลาต่างกัน)
     const valid = (v) => !(v === null || v === undefined || v === '' || !Number.isFinite(Number(v)));   // null=comms loss → คงสถานะ
     // เข้า oven (inTag เปลี่ยนเป็นเลขใหม่ที่ยังไม่อยู่ในเตา)
     if (valid(p.inId)) {
@@ -91,7 +124,7 @@ class CarrierTracker {
         }
         if (ctx.firstBoTs == null) ctx.firstBoTs = now;
         ctx.lastSeenTs = now; ctx.lastStation = p.station;
-        ov.c[inId] = { inTime: now, params: _latch({}, p.params) };
+        ov.c[inId] = { inTime: now, params: _latch({}, p.params), stats: _accStats({}, p.params) };
       }
       ov.li = inId;
     }
@@ -103,15 +136,20 @@ class CarrierTracker {
         const ctx = this._findCtxByCarrier(st, outId);
         if (ctx) {
           const dwellS = (rec && rec.inTime != null) ? Math.round((now - rec.inTime) / 1000) : null;   // เวลาอบ (วินาที) · out ก่อน in = null (robust)
-          const params = rec ? rec.params : _latch({}, p.params);
+          const rawParams = rec ? rec.params : _latch({}, p.params);
+          const summ = _summarize(cfg, rawParams, rec ? rec.stats : null);   // สรุป last/avg + min/max ตาม track
+          const params = summ.values;
+          const hasStats = Object.keys(summ.stats).length > 0;
           const stepEv = mk('STEP', outId, p, params, ctx);
           stepEv.enterTs = rec ? rec.inTime : null; stepEv.exitTs = now; stepEv.dwell = dwellS;
+          if (hasStats) stepEv.stats = summ.stats;
           events.push(stepEv);
           const isFinish = !!((cfg.stations || {})[stn] || {}).finish;
           const isLast = pos === lastBySet[pset];
           if (isFinish || isLast) {                    // oven ปลายไลน์ = ขาออก (done)
             const ex = mk('EXIT', outId, p, params, ctx);
             ex.enterTs = rec ? rec.inTime : null; ex.exitTs = now; ex.dwell = dwellS;
+            if (hasStats) ex.stats = summ.stats;
             events.push(ex); ctx.exited = true;
           }
           ctx.lastExitTs = now; ctx.lastSeenTs = now; ctx.lastStation = p.station; ctx.lastParams = { ...params };
@@ -184,21 +222,26 @@ class CarrierTracker {
         const jkc = pset + ':' + cur.carrier;
         const ctx = st.jobs[jkc] || { dateKey: _fmtDate(now), set: pset, lane: laneOf(p), enterTs: now, gap: true };
         const dwellS = cur.arriveTs != null ? Math.round((now - cur.arriveTs) / 1000) : null;   // dwell = วินาทีเสมอ (timeout - timein)
-        const stepEv = mk('STEP', cur.carrier, p, cur.params, ctx);
+        const summ = _summarize(cfg, cur.params, cur.stats);            // สรุป last/avg + min/max ตาม track
+        const params = summ.values;
+        const hasStats = Object.keys(summ.stats).length > 0;
+        const stepEv = mk('STEP', cur.carrier, p, params, ctx);
         stepEv.enterTs = cur.arriveTs != null ? cur.arriveTs : null;   // เวลาเข้าบ่อ (timestamp ms)
         stepEv.exitTs = now;                                            // เวลาออก
         stepEv.dwell = dwellS;
+        if (hasStats) stepEv.stats = summ.stats;
         events.push(stepEv);
         const isFinish = !!((cfg.stations || {})[String(p.station)] || {}).finish;   // จุดจบ (มีได้หลายบ่อ)
         const isLast = pos === lastBySet[pset];                         // บ่อสุดท้ายของแถวนี้
         if (isFinish || isLast) {                                       // ออกบ่อสุดท้าย/finish = "ขาออก" (done) · จบได้หลายครั้ง (จบในไลน์ → oven → จบอีก)
-          const exitEv = mk('EXIT', cur.carrier, p, cur.params, ctx);
+          const exitEv = mk('EXIT', cur.carrier, p, params, ctx);
           exitEv.enterTs = cur.arriveTs != null ? cur.arriveTs : null; exitEv.exitTs = now; exitEv.dwell = dwellS;
+          if (hasStats) exitEv.stats = summ.stats;
           events.push(exitEv);
           ctx.exited = true;                                           // mark ขาออก (กลับจาก oven → running อีก · ไม่ลบจนกว่า idle-timeout)
         }
         // จำเวลา/บ่อ/ค่า unload ล่าสุด — completion (complete) คิดจาก idle-timeout: หายจากทุกบ่อเกิน N นาที (sweepIdle)
-        ctx.lastExitTs = now; ctx.lastSeenTs = now; ctx.lastStation = p.station; ctx.lastParams = { ...cur.params };
+        ctx.lastExitTs = now; ctx.lastSeenTs = now; ctx.lastStation = p.station; ctx.lastParams = { ...params };
         st.jobs[jkc] = ctx;
         st.occ[pos] = null; cur = null;
       }
@@ -231,9 +274,10 @@ class CarrierTracker {
           }
           if (ctx.firstBoTs == null) ctx.firstBoTs = now;   // เวลาที่เข้าบ่อแรกจริง (แยกจาก register) → คำนวณ "ก่อนเข้าไลน์"
           ctx.lastSeenTs = now; ctx.lastStation = p.station;   // เห็นในบ่อล่าสุด (รีเซ็ตนาฬิกา idle-timeout)
-          st.occ[pos] = { carrier: nid, params: _latch({}, p.params), arriveTs: now, set: pset };   // จับเวลาเข้าบ่อ (+set กัน carrier ซ้ำข้ามแถว)
+          st.occ[pos] = { carrier: nid, params: _latch({}, p.params), stats: _accStats({}, p.params), arriveTs: now, set: pset };   // จับเวลาเข้าบ่อ (+set กัน carrier ซ้ำข้ามแถว)
         } else {
           _latch(cur.params, p.params);                // carrier เดิมยังอยู่ → latch param
+          cur.stats = _accStats(cur.stats || {}, p.params);   // + สะสม min/max/avg ทุก poll
           const ctx = st.jobs[pset + ':' + nid];       // อัปเดตเวลาเห็นล่าสุด (กัน idle-timeout จบทั้งที่ยังอยู่บ่อ)
           if (ctx) { ctx.lastSeenTs = now; ctx.lastStation = p.station; }
         }
@@ -309,4 +353,4 @@ class CarrierTracker {
   }
 }
 
-module.exports = { CarrierTracker, _fmtDate, _latch };
+module.exports = { CarrierTracker, _fmtDate, _latch, _accStats, _summarize };

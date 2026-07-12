@@ -52,7 +52,7 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);
       `INSERT INTO ${this._t(ev.line, 'event')} (line, job_key, type, carrier, lane, station, ts, data)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [ev.line, ev.jobKey, ev.type, ev.carrier, ev.lane, ev.station, ev.ts,
-       JSON.stringify({ enterTs: ev.enterTs, exitTs: ev.exitTs, dwell: ev.dwell, values: ev.values, gap: ev.gap, run: ev.run })]);
+       JSON.stringify({ enterTs: ev.enterTs, exitTs: ev.exitTs, dwell: ev.dwell, values: ev.values, stats: ev.stats || undefined, gap: ev.gap, run: ev.run })]);
   }
 
   // 2) upsert job = 1 row/job · header (barcode) merge · gap sticky
@@ -90,7 +90,7 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);
     const obj = {
       name: step.name || '', seq: step.seq != null ? step.seq : null, type: step.type || '',
       enterTs: step.enterTs != null ? step.enterTs : null, exitTs: step.exitTs != null ? step.exitTs : null, dwell,
-      params: step.params || {}, inSpec: step.inSpec != null ? step.inSpec : null, ts: step.ts || Date.now(),
+      params: step.params || {}, stats: step.stats || undefined, inSpec: step.inSpec != null ? step.inSpec : null, ts: step.ts || Date.now(),
     };
     const { rows } = await this.pool.query(
       `UPDATE ${this._t(line, 'job')}

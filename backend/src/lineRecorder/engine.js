@@ -78,6 +78,7 @@ class LineEngine {
       step = await store.upsertStep(jobKey, {
         station: ev.station, name: ev.stationName, seq: ev.seq, type: ev.stationType,
         enterTs: ev.enterTs, exitTs: ev.exitTs, dwell: ev.dwell != null ? ev.dwell : null, params: values,
+        stats: ev.stats || null,   // min/max/avg ต่อ param (เมื่อเปิด track) · null = ไม่ track
         inSpec: violations.length === 0, ts,
       });
     }
