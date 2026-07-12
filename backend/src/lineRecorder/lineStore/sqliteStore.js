@@ -49,7 +49,8 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);`;
   async appendEvent(ev) {
     this.db.prepare(`INSERT INTO ${this._t(ev.line, 'event')} (line,job_key,type,carrier,lane,station,ts,data) VALUES (?,?,?,?,?,?,?,?)`)
       .run(ev.line, ev.jobKey, ev.type, ev.carrier, ev.lane, ev.station, ev.ts,
-        JSON.stringify({ enterTs: ev.enterTs, exitTs: ev.exitTs, dwell: ev.dwell, values: ev.values, stats: ev.stats || undefined, gap: ev.gap, run: ev.run }));
+        JSON.stringify({ enterTs: ev.enterTs, exitTs: ev.exitTs, dwell: ev.dwell, values: ev.values, stats: ev.stats || undefined, spec: ev.spec || undefined,
+          dwellSp: ev.dwellSp, dwellTol: ev.dwellTol, dwellInSpec: ev.dwellInSpec, gap: ev.gap, run: ev.run }));
   }
 
   // 2) upsert job — header merge ด้วย json_patch · gap sticky (bitwise OR)
@@ -87,7 +88,10 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);`;
     const obj = {
       name: step.name || '', seq: step.seq != null ? step.seq : null, type: step.type || '',
       enterTs: step.enterTs != null ? step.enterTs : null, exitTs: step.exitTs != null ? step.exitTs : null, dwell,
-      params: step.params || {}, ...(step.stats ? { stats: step.stats } : {}), inSpec: step.inSpec != null ? step.inSpec : null, ts: step.ts || Date.now(),
+      params: step.params || {}, ...(step.stats ? { stats: step.stats } : {}), ...(step.spec ? { spec: step.spec } : {}),
+      ...(step.dwellSp != null ? { dwellSp: step.dwellSp } : {}), ...(step.dwellTol != null ? { dwellTol: step.dwellTol } : {}),
+      ...(step.dwellInSpec != null ? { dwellInSpec: step.dwellInSpec } : {}),
+      inSpec: step.inSpec != null ? step.inSpec : null, ts: step.ts || Date.now(),
     };
     const row = this.db.prepare(`SELECT steps FROM ${jt} WHERE job_key=?`).get(jobKey);
     if (!row) return null;

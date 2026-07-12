@@ -27,7 +27,18 @@ function normalizeLineConfig(raw, file) {
     station: f.station != null ? String(f.station) : null,
     source: _obj(f.source),                                  // {kind:plc|manual|formula, index|expr}
     tag: _obj(f.tag),                                        // {device,tag} — job-field อ่านจาก tag (เช่น barcode)
-    spec: _obj(f.spec),                                      // {min,max,warn}
+    spec: (() => {                                           // เกณฑ์ in-spec 2 mode: minmax(เลข/tag ต่อตัว) | offset(tag อ้างอิง ± offset)
+      const s = _obj(f.spec);
+      const num = (x) => (x == null || x === '' || !Number.isFinite(Number(x))) ? null : Number(x);
+      const tg = (x) => { const o = _obj(x); return (o.device && o.tag) ? { device: String(o.device), tag: String(o.tag) } : null; };
+      return {
+        mode: s.mode === 'offset' ? 'offset' : 'minmax',
+        min: num(s.min), max: num(s.max),                    // fixed (minmax mode · backward compat)
+        minTag: tg(s.minTag), maxTag: tg(s.maxTag),          // ถ้ามี → ใช้ tag แทนเลข (minmax mode)
+        refTag: tg(s.refTag), minOff: num(s.minOff), maxOff: num(s.maxOff),   // offset mode: min=ref+minOff · max=ref+maxOff
+        warn: s.warn,
+      };
+    })(),
     track: (() => { const t = _obj(f.track); return { minMax: t.minMax === true, summary: t.summary === 'avg' ? 'avg' : 'last' }; })(),   // เก็บ min/max ระหว่างชุบ + สรุป last(ค่าสุดท้าย)/avg(เฉลี่ย)
     display: { table: true, mimic: false, report: false, order: 0, ..._obj(f.display) },
   })).filter((f) => f.key);

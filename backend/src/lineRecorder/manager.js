@@ -6,6 +6,16 @@ const fs = require('fs');
 const { loadLineConfigs, saveLineConfig, deleteLineConfig } = require('./lineConfig');
 const { decode } = require('./decoder');
 const { LineEngine, checkSpec } = require('./engine');
+
+// ค่าอยู่ในเกณฑ์ที่เก็บไว้ (specMap = {key:{min,max}} ที่ resolve แล้ว) — true ถ้าไม่หลุดตัวไหนเลย
+function _withinSpec(params, specMap) {
+  for (const k in (specMap || {})) {
+    const v = (params || {})[k]; if (v == null) continue;
+    const l = specMap[k];
+    if ((l.min != null && v < l.min) || (l.max != null && v > l.max)) return false;
+  }
+  return true;
+}
 const { createLineStore } = require('./lineStore');
 const { PlcSource } = require('./plcSource');
 const { CarrierTracker } = require('./source/carrierTracker');
@@ -20,7 +30,9 @@ class LineRecorderManager {
     this.dbManager = dbManager || null;          // resolve DB connection ตามชื่อ (Setup → Databases)
     this._stores = {};                           // pool: 'db:<name>' | '__file__' → LineStore (per-line เลือก DB ได้)
     if (store) this._stores.__file__ = store;    // inject (test)
-    this.engine = new LineEngine({ getStore: (line) => this._storeFor(this.configs[line]), getConfig: (line) => this.configs[line] });
+    this.tagEngine = tagEngine || null;   // อ่านค่า tag (spec แบบ tag/offset · resolve ตอน STEP)
+    const readTag = (device, tag) => { try { const v = tagEngine && tagEngine.getTagValue ? tagEngine.getTagValue(device, tag) : null; return v ? v.value : null; } catch (_) { return null; } };
+    this.engine = new LineEngine({ getStore: (line) => this._storeFor(this.configs[line]), getConfig: (line) => this.configs[line], getTagValue: readTag });
     this.plc = new PlcSource({ engine: tagEngine, manager: this, intervalMs: plcIntervalMs });   // seq-based (mode=tag) อ่าน PLC ผ่าน tag engine
     this.tracker = new CarrierTracker();                                                         // จำตำแหน่ง + diff (snapshot)
     this.snap = new SnapshotSource({ engine: tagEngine, manager: this, tracker: this.tracker, intervalMs: plcIntervalMs });   // mode=snapshot (select tag)
@@ -361,8 +373,11 @@ class LineRecorderManager {
           stationName: sc.name || '', type: sc.type || '', seq: sc.seq != null ? Number(sc.seq) : null,
           enterTs: d.enterTs != null ? d.enterTs : null, exitTs: d.exitTs != null ? d.exitTs : null,
           dwell: d.dwell != null ? d.dwell : null,
-          inSpec: checkSpec(cfg.fields, e.station, params).length === 0,   // สด (event ไม่เก็บ inSpec)
+          inSpec: (d.spec ? _withinSpec(params, d.spec) : (checkSpec(cfg.fields, e.station, params).length === 0)) && d.dwellInSpec !== false,   // เกณฑ์ที่เก็บ (tag/offset) + เวลาชุบหลุด SP±% = ✗
           params, stats: d.stats || null,   // min/max/avg ต่อ param (เมื่อเปิด track)
+          spec: d.spec || null,   // เกณฑ์ที่ใช้จริง (resolve แล้ว) → แสดง min–max
+          dwellSp: d.dwellSp != null ? d.dwellSp : null, dwellTol: d.dwellTol != null ? d.dwellTol : null,
+          dwellInSpec: d.dwellInSpec != null ? d.dwellInSpec : null,   // null = ไม่ตั้ง/เทียบเฉย ๆ
           ts: e.ts, source: 'event',
         };
       });
@@ -378,8 +393,11 @@ class LineRecorderManager {
         stationName: sc.name || s.name || '', type: sc.type || s.type || '', seq: s.seq != null ? Number(s.seq) : null,
         enterTs: s.enterTs != null ? s.enterTs : null, exitTs: s.exitTs != null ? s.exitTs : null,
         dwell: s.dwell != null ? s.dwell : null,
-        inSpec: s.inSpec != null ? s.inSpec : (checkSpec(cfg.fields, s.station, params).length === 0),
-        params, stats: s.stats || null, ts: s.ts, source: 'steps',
+        inSpec: s.inSpec != null ? s.inSpec : (s.spec ? _withinSpec(params, s.spec) : (checkSpec(cfg.fields, s.station, params).length === 0)),
+        params, stats: s.stats || null, spec: s.spec || null,
+        dwellSp: s.dwellSp != null ? s.dwellSp : null, dwellTol: s.dwellTol != null ? s.dwellTol : null,
+        dwellInSpec: s.dwellInSpec != null ? s.dwellInSpec : null,
+        ts: s.ts, source: 'steps',
       };
     });
   }
@@ -395,7 +413,7 @@ class LineRecorderManager {
     const jobs = await this.jobs({ line, from, to, status, q, limit });
     const tz = (v) => (v == null ? '' : new Date(Number(v)).toLocaleString('sv-SE', { timeZone: 'Asia/Bangkok' }));
     const esc = (v) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    const cols = ['job_key', 'carrier', 'date_key', 'status', ...jobFields, 'pass_no', 'station', 'station_name', 'enter', 'exit', 'dwell_s', 'in_spec', ...stepFields, ...statCols];
+    const cols = ['job_key', 'carrier', 'date_key', 'status', ...jobFields, 'pass_no', 'station', 'station_name', 'enter', 'exit', 'dwell_s', 'dwell_sp', 'dwell_in_spec', 'in_spec', ...stepFields, ...statCols];
     const statVals = (p) => statKeys.flatMap((k) => { const s = (p.stats || {})[k]; return [s && s.min != null ? s.min : '', s && s.max != null ? s.max : '']; });
     const rows = [cols.join(',')];
     for (const j of (jobs || [])) {
@@ -403,9 +421,10 @@ class LineRecorderManager {
       const header = j.data || j.header || {};
       const base = [jk, j.carrier, j.dateKey || j.date_key, j.status, ...jobFields.map((k) => header[k])];
       const path = await this.jobPath(jk);
-      if (!path.length) { rows.push([...base, '', '', '', '', '', '', ...stepFields.map(() => ''), ...statCols.map(() => '')].map(esc).join(',')); continue; }
+      if (!path.length) { rows.push([...base, '', '', '', '', '', '', '', '', ...stepFields.map(() => ''), ...statCols.map(() => '')].map(esc).join(',')); continue; }
       for (const p of path) {
-        rows.push([...base, p.passNo, p.station, p.stationName, tz(p.enterTs), tz(p.exitTs), p.dwell, p.inSpec ? 1 : 0,
+        rows.push([...base, p.passNo, p.station, p.stationName, tz(p.enterTs), tz(p.exitTs), p.dwell,
+          p.dwellSp != null ? p.dwellSp : '', p.dwellInSpec == null ? '' : (p.dwellInSpec ? 1 : 0), p.inSpec ? 1 : 0,
           ...stepFields.map((k) => (p.params[k] != null ? p.params[k] : '')), ...statVals(p)].map(esc).join(','));
       }
     }
