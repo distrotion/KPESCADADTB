@@ -614,6 +614,101 @@ app.put('/api/remote-sites/:id', (req, res) => {
 });
 app.delete('/api/remote-sites/:id', (req, res) => blockedNow() ? res.status(403).json({ ok: false, error: 'license' }) : res.json({ ok: gateway.remove(req.params.id) }));
 
+// ── Self-update (U2/U3) — รับ bundle ที่เซ็นแล้ว → verify → (consent) → install → restart → health → auto-rollback ──
+//   ⛔ ส่งแค่ "version(โค้ด)" — config/data/license ไม่โดนแตะ (whitelist ใน updateManager) · verify Ed25519 pubkey เดียวกับ license
+const UpdateManager = require('../backend/src/updateManager');
+const UPDATE_DIR = (() => { try { return path.join(path.dirname(require('../backend/src/csvUtil').configFile('x.json')), 'updates'); } catch (_) { return path.join(__dirname, '..', 'updates'); } })();
+function healthCheckBackend(timeoutMs = 25000) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    const tryOnce = () => {
+      const req = http.get({ host: BACKEND_HOST || '127.0.0.1', port: PORTS.backend, path: '/api/health', timeout: 3000 }, (r) => { r.resume(); r.statusCode === 200 ? resolve(true) : retry(); });
+      req.on('error', retry); req.on('timeout', () => { try { req.destroy(); } catch (_) {} retry(); });
+    };
+    const retry = () => { if (Date.now() > deadline) return resolve(false); setTimeout(tryOnce, 1500); };
+    setTimeout(tryOnce, 1500);   // เผื่อ child เพิ่ง spawn
+  });
+}
+const updater = new UpdateManager({
+  root: ROOT, stateDir: UPDATE_DIR,
+  policyFile: (() => { try { return require('../backend/src/csvUtil').configFile('update-policy.json'); } catch (_) { return path.join(UPDATE_DIR, '..', 'update-policy.json'); } })(),
+  restart: async () => { for (const n of ['backend', 'frontend', 'deploy']) await restartOne(n); },
+  health: async () => healthCheckBackend(),
+});
+
+app.get('/api/system/version', (_req, res) => res.json({ ok: true, version: (readVersion() || {}).version || null, platform: updater.platform(), state: updater.getState(), policy: updater.policy() }));
+app.get('/api/system/update/status', (_req, res) => res.json({ ok: true, state: updater.getState(), policy: updater.policy() }));
+app.get('/api/system/update/policy', (_req, res) => res.json({ ok: true, policy: updater.policy() }));
+app.post('/api/system/update/policy', (req, res) => { if (blockedNow()) return res.status(403).json({ ok: false, error: 'license' }); if (!isLoopback(req)) return res.status(403).json({ ok: false, error: 'ตั้ง policy ได้เฉพาะบนจอเครื่องนี้ (loopback)' }); res.json({ ok: true, policy: updater.setPolicy(req.body || {}) }); });
+app.post('/api/system/update/approve', (req, res) => { if (!isLoopback(req)) return res.status(403).json({ ok: false, error: 'ยืนยันติดตั้งได้เฉพาะบนจอเครื่องนี้ (loopback)' }); updater.approve().then((st) => res.json({ ok: st.phase === 'done', state: st })).catch((e) => res.status(500).json({ ok: false, error: e.message })); });
+app.post('/api/system/update/rollback', (req, res) => { if (blockedNow()) return res.status(403).json({ ok: false, error: 'license' }); updater.rollback().then((r) => res.json(r)).catch((e) => res.status(500).json({ ok: false, error: e.message })); });
+
+// รับ bundle (application/octet-stream · stream ลงไฟล์) → verify ลายเซ็นก่อนแตก tar เต็ม (#1) → install
+const UPDATE_MAX_BYTES = 600 * 1024 * 1024;   // cap 600MB (#3 · กันดิสก์เต็ม/SD Pi)
+app.post('/api/system/update', (req, res) => {
+  if (blockedNow()) return res.status(403).json({ ok: false, error: 'license' });
+  if (updater.policy().mode === 'off') return res.status(403).json({ ok: false, error: 'self-update ปิดอยู่ (policy=off) — เปิดบนจอเครื่องนี้ก่อน' });
+  const clen = parseInt(req.headers['content-length'], 10) || 0;
+  if (clen > UPDATE_MAX_BYTES) return res.status(413).json({ ok: false, error: `bundle ใหญ่เกิน (${(clen / 1048576) | 0}MB > ${UPDATE_MAX_BYTES / 1048576 | 0}MB)` });
+  const from = req.headers['x-update-from'] || null;
+  const allowDowngrade = req.headers['x-allow-downgrade'] === '1';
+  try { fs.mkdirSync(UPDATE_DIR, { recursive: true }); } catch (_) {}
+  const inc = path.join(UPDATE_DIR, 'incoming.kpeu');
+  let written = 0, aborted = false;
+  const ws = fs.createWriteStream(inc);
+  req.on('data', (c) => { written += c.length; if (written > UPDATE_MAX_BYTES && !aborted) { aborted = true; try { req.destroy(); ws.destroy(); } catch (_) {} try { res.status(413).json({ ok: false, error: 'bundle ใหญ่เกิน (ตัดกลางคัน)' }); } catch (_) {} } });   // cap แบบ stream (เผื่อ header โกหก)
+  ws.on('error', () => { if (!aborted) { try { res.status(500).json({ ok: false, error: 'รับไฟล์ล้มเหลว' }); } catch (_) {} } });
+  ws.on('finish', async () => {
+    if (aborted) return;
+    const tar = require('child_process');
+    try {
+      const ex = path.join(UPDATE_DIR, 'staging');
+      fs.rmSync(ex, { recursive: true, force: true }); fs.mkdirSync(ex, { recursive: true });
+      // (#1) แตกเฉพาะ manifest+sig ก่อน → verify ลายเซ็น/version/platform → ถ้าไม่ผ่าน "ไม่แตะ tar ที่เหลือ"
+      let man, sig;
+      try {
+        tar.execFileSync('tar', ['-xzf', inc, '-C', ex, 'manifest.json', 'manifest.sig'], { stdio: 'ignore', timeout: 30000 });
+        man = JSON.parse(fs.readFileSync(path.join(ex, 'manifest.json'), 'utf8')); sig = fs.readFileSync(path.join(ex, 'manifest.sig'), 'utf8');
+      } catch (_) { return res.json({ ok: false, state: updater.noteRejected('bad-bundle', null) }); }   // ไม่ใช่ .kpeu ที่ถูกต้อง (ไม่ leak path)
+      const pre = updater.check(man, sig, { allowDowngrade });
+      if (!pre.ok) return res.json({ ok: false, state: updater.noteRejected(pre.reason, pre.version) });
+      // ผ่านลายเซ็นแล้ว (vendor-signed) → แตก payload ทั้งชุด + verify hash + policy + install
+      tar.execFileSync('tar', ['-xzf', inc, '-C', ex], { stdio: 'ignore', timeout: 180000 });
+      const st = await updater.receiveExtracted(ex, { from, allowDowngrade });
+      res.json({ ok: st.phase === 'done' || st.phase === 'waiting-consent', state: st });
+    } catch (e) { try { res.status(400).json({ ok: false, error: e.message }); } catch (_) {} }
+  });
+  req.pipe(ws);
+});
+
+// A-side: อัปโหลด bundle มาที่ Manager นี้ → relay ต่อไปเครื่อง B (เก็บ token ฝั่ง server · เลี่ยง CORS ของ browser)
+//   header: x-b-to (IP หรือ IP:port ของ B) · x-b-token (API token ของ B) · x-b-from · x-b-downgrade
+app.post('/api/system/update/send', (req, res) => {
+  if (blockedNow()) return res.status(403).json({ ok: false, error: 'license' });
+  const to = String(req.headers['x-b-to'] || '').trim();
+  if (!to) return res.status(400).json({ ok: false, error: 'ต้องระบุ IP เครื่องปลายทาง (B)' });
+  const clen = parseInt(req.headers['content-length'], 10) || 0;
+  if (clen > UPDATE_MAX_BYTES) return res.status(413).json({ ok: false, error: 'bundle ใหญ่เกิน 600MB' });
+  const hostPort = to.includes(':') ? to : to + ':5012';
+  const [bh, bp] = hostPort.split(':');
+  try { fs.mkdirSync(UPDATE_DIR, { recursive: true }); } catch (_) {}
+  const tmp = path.join(UPDATE_DIR, 'outgoing.kpeu');
+  const ws = fs.createWriteStream(tmp);
+  ws.on('error', () => { try { res.status(500).json({ ok: false, error: 'รับไฟล์ล้มเหลว' }); } catch (_) {} });
+  ws.on('finish', () => {
+    const headers = { 'Content-Type': 'application/octet-stream', 'Content-Length': fs.statSync(tmp).size, 'x-update-from': req.headers['x-b-from'] || os.hostname() };
+    if (req.headers['x-b-token']) headers['x-api-token'] = req.headers['x-b-token'];
+    if (req.headers['x-b-downgrade'] === '1') headers['x-allow-downgrade'] = '1';
+    const fr = http.request({ host: bh, port: parseInt(bp, 10) || 5012, path: '/api/system/update', method: 'POST', headers, timeout: 300000 }, (br) => {
+      let d = ''; br.on('data', (c) => d += c); br.on('end', () => { let j = null; try { j = JSON.parse(d); } catch (_) {} res.json({ ok: !!(j && j.ok), target: hostPort, status: br.statusCode, result: j || String(d).slice(0, 300) }); });
+    });
+    fr.on('error', (e) => { try { res.status(502).json({ ok: false, error: 'ส่งไป B ไม่ได้: ' + e.message }); } catch (_) {} });
+    fr.on('timeout', () => { try { fr.destroy(); res.status(504).json({ ok: false, error: 'timeout — B ไม่ตอบ' }); } catch (_) {} });
+    fs.createReadStream(tmp).pipe(fr);
+  });
+  req.pipe(ws);
+});
+
 // ── Embed proxy allowlist (โดเมนที่อนุญาตฝังผ่าน serverA /embed-proxy · serve.js อ่านไฟล์เดียวกัน) ──
 const EMBED_PROXY_FILE = (() => { try { return require('../backend/src/csvUtil').configFile('embed-proxy.json'); } catch (_) { return null; } })();
 function readEmbedAllow() {
@@ -676,6 +771,13 @@ app.post('/api/token/reset', async (req, res) => {
   writeApiToken(next);
   res.json({ ok: true, enabled: next.enabled, masked: maskToken(next.token) });
   if (next.enabled) restartForToken();   // กระจาย token ใหม่ให้ลูก (ถ้าเปิดอยู่)
+});
+// token เต็ม (คัดลอกไปตั้งค่าเครื่องอื่น เช่น self-update/gateway) — loopback หรือ login-gate เท่านั้น (ไม่ปล่อยออก LAN แบบไม่ auth)
+app.get('/api/token/full', (req, res) => {
+  const g = readGate();
+  const trusted = isLoopback(req) || (g.managerLogin && g.secret && gateValid(g.secret, gateTokenOf(req)));
+  if (!trusted) return res.status(403).json({ ok: false, error: 'ดู token เต็มได้เฉพาะบนจอเครื่องนี้ (หรือ login Manager)' });
+  res.json({ ok: true, token: readApiToken().token });
 });
 
 // ── Access gate ของ Manager (login เข้า UI Manager) — UI-level · แยกจาก §21 · default ปิด ──
@@ -913,6 +1015,7 @@ server.listen(MGR_PORT, () => {
   console.log(`Public UI (frontend) → http://localhost:${PORTS.frontend}  ·  backend(internal) ${BACKEND_HOST}:${PORTS.backend}`);
   if (!blockedNow()) { try { gateway.start(); } catch (e) { console.error('[gateway] start:', e && e.message); } }   // R1: เปิด tunnel ตาม remote-sites.json (blocked → ไม่เปิด · ฟีเจอร์ gateway ต้องมี license)
   else console.error('[LICENSE] gateway not started — Manager gated');
+  updater.checkResume().then((st) => { if (st && st.reason === 'interrupted') console.error('[update] พบติดตั้งค้างกลางคัน → ถอยกลับแล้ว (rolled-back)'); }).catch(() => {});   // #4 กู้ install ที่ถูกไฟดับ
   openBrowser(`http://localhost:${MGR_PORT}`);
   // (B1) auto-start ลูกตอนบูต — backend+frontend+deploy เสมอ (systemd/launchd ปลุก Manager → ลูกขึ้นเอง ไม่ต้องกด Start)
   //   ปิด auto-start ทั้งหมดด้วย env KPE_NO_AUTOSTART=1 (dev/test) · เลี่ยง deploy ตัวเดียวด้วย KPE_NO_AUTOSTART_DEPLOY=1

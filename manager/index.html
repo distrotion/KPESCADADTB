@@ -411,6 +411,7 @@ button:disabled{opacity:.35;cursor:default}
         เปิดใช้ API token
       </label>
       <span style="font-size:12px;color:var(--dim)">token: <strong id="token-masked" style="font-family:monospace;color:var(--blue)">—</strong></span>
+      <button class="btn-open" onclick="copyFullToken()" title="คัดลอก token เต็ม → เอาไปใส่เครื่อง A ตอนส่งอัปเดต/gateway" style="padding:8px 14px">📋 คัดลอก token</button>
       <button class="btn-open" onclick="resetToken()" style="padding:8px 14px">♻ รีเซต token</button>
       <span id="token-msg" style="font-size:11.5px;color:var(--dim)"></span>
     </div>
@@ -535,6 +536,47 @@ button:disabled{opacity:.35;cursor:default}
     </div>
     <div style="font-size:10.5px;color:var(--dim);padding:0 2px">ใส่เฉพาะโดเมน (เช่น <code>thaiparker.co.th</code>) — ครอบ subdomain (<code>www.</code>) ให้อัตโนมัติ · ฝังในจอ HMI ที่ Web Embed (✅ ผ่าน proxy)</div>
     <div id="ep-msg" style="font-size:11.5px;color:var(--dim);margin-top:6px"></div>
+  </div>
+
+  <!-- Self-update — รับอัปเดต version (โค้ด) ที่เซ็นจากผู้ขาย · ไม่แตะ config/ข้อมูล -->
+  <div class="ports-card" id="update-card">
+    <div class="ports-head">
+      <h3>⬆️ อัปเดตเวอร์ชัน (self-update)</h3>
+      <span class="sub">รับ bundle ที่ผู้ขายเซ็นแล้ว → ตรวจลายเซ็น → ติดตั้ง (เฉพาะโค้ด · setting/ข้อมูล/license ไม่โดนแตะ)</span>
+      <button class="btn-open" onclick="loadUpdate()" style="margin-left:auto;padding:5px 12px;font-size:11px">🔄 รีเฟรช</button>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;padding:8px 2px">
+      <span style="font-size:12px;color:var(--dim)">เวอร์ชันนี้: <strong id="upd-version" style="color:#e5e7eb;font-family:monospace">—</strong></span>
+      <span style="font-size:12px;color:var(--dim)">platform: <code id="upd-platform" style="color:#9ca3af">—</code></span>
+      <span style="font-size:12px;color:var(--dim);margin-left:auto">รับอัปเดต:</span>
+      <select id="upd-policy" onchange="setUpdatePolicy(this.value)" style="padding:6px 8px;background:#111827;color:#e5e7eb;border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <option value="off">ปิด (ไม่รับ)</option>
+        <option value="manual">รับ + ถามก่อนติดตั้ง</option>
+        <option value="auto">ติดตั้งอัตโนมัติ</option>
+      </select>
+    </div>
+    <div id="upd-status" style="font-size:12px;padding:8px 10px;background:#0b1220;border:1px solid var(--border);border-radius:8px;margin:4px 2px;color:var(--dim)">สถานะ: —</div>
+    <div id="upd-consent" style="display:none;padding:10px;background:#1e293b;border:1px solid #f59e0b;border-radius:8px;margin:6px 2px">
+      <div style="color:#fbbf24;font-weight:700;font-size:13px">มีอัปเดตรอติดตั้ง: <span id="upd-consent-ver"></span></div>
+      <div id="upd-consent-notes" style="color:var(--dim);font-size:11.5px;margin:4px 0 8px"></div>
+      <button onclick="approveUpdate()" style="background:#16a34a;color:#fff;border:0;border-radius:6px;padding:8px 16px;font-weight:700;cursor:pointer">✓ ติดตั้งเลย</button>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;padding:6px 2px;flex-wrap:wrap;border-top:1px dashed var(--border);margin-top:4px">
+      <button onclick="rollbackUpdate()" style="background:#374151;color:#e5e7eb;border:0;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer">↩ ถอยเวอร์ชันก่อนหน้า</button>
+      <span id="upd-msg" style="font-size:11.5px;color:var(--dim)"></span>
+    </div>
+    <!-- A-side: ส่ง bundle ที่มีอยู่ ไปติดตั้งที่เครื่อง B -->
+    <div style="border-top:1px dashed var(--border);margin-top:6px;padding:10px 2px 2px">
+      <div style="font-size:12px;color:#60a5fa;font-weight:700;margin-bottom:6px">📤 ส่งเวอร์ชันไปเครื่องอื่น (B)</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:12px">
+        <input type="file" id="upd-file" accept=".kpeu" style="font-size:11px;color:var(--dim);max-width:190px">
+        <input id="upd-to" type="text" placeholder="IP เครื่อง B (172.23.10.50 หรือ 172.23.10.50:5012)" style="flex:1;min-width:170px;padding:7px;background:#111827;color:#e5e7eb;border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <input id="upd-btoken" type="password" placeholder="API token ของ B (ถ้าเปิด)" title="token ของเครื่องปลายทาง — ดูที่การ์ด API token บนจอ B" style="width:150px;padding:7px;background:#111827;color:#e5e7eb;border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <button onclick="sendUpdate()" style="background:#2563eb;color:#fff;border:0;border-radius:6px;padding:8px 14px;font-weight:700;cursor:pointer">📤 ส่ง</button>
+      </div>
+      <div id="upd-send-msg" style="font-size:11.5px;color:var(--dim);margin-top:6px"></div>
+    </div>
+    <div style="font-size:10.5px;color:var(--dim);padding:4px 2px">เลือกไฟล์ <code>.kpeu</code> (ผู้ขายเซ็นแล้ว) → ใส่ IP เครื่อง B + token ของ B → กดส่ง · B ต้องเปิด "รับอัปเดต" ก่อน · ล้มเหลว = B ถอยกลับอัตโนมัติ · หรือใช้ <code>tools/push-update.js</code> ก็ได้</div>
   </div>
 
 </div><!-- /container -->
@@ -981,6 +1023,14 @@ function toggleToken(ev) {
     .then(r => r.json()).then(d => { applyToken(d); tokenMsg(enabled ? '✓ เปิดแล้ว (service กำลัง restart)' : '✓ ปิดแล้ว'); })
     .catch(() => tokenMsg('✗ ผิดพลาด'));
 }
+function copyFullToken() {
+  fetch(gatedUrl('/api/token/full')).then(r => r.json()).then(d => {
+    if (!d.ok || !d.token) { tokenMsg('✗ ' + (d.error || 'ยังไม่มี token — กดรีเซตก่อน')); return; }
+    const done = () => tokenMsg('✓ คัดลอก token เต็มแล้ว — เอาไปใส่ช่อง "API token ของ B" ตอนส่งอัปเดต');
+    if (navigator.clipboard) navigator.clipboard.writeText(d.token).then(done).catch(() => { prompt('คัดลอก token นี้:', d.token); });
+    else prompt('คัดลอก token นี้:', d.token);
+  }).catch(() => tokenMsg('✗ อ่าน token ไม่ได้'));
+}
 function resetToken() {
   kpeConfirm({
     icon: '🔄', title: 'รีเซต token', confirmText: 'รีเซต',
@@ -1085,6 +1135,8 @@ loadGateCfg();
 loadLicense();
 loadRemoteSites();
 setInterval(loadRemoteSites, 5000);   // R4: รีเฟรชสถานะ online/listening
+loadUpdate();
+setInterval(loadUpdate, 5000);        // self-update: รีเฟรช version/policy/สถานะ (เห็น waiting-consent เด้ง)
 loadEmbedAllow();
 
 // ── Remote Sites (Gateway · R3) ────────────────────────────────────────────
@@ -1137,6 +1189,74 @@ function rsApi(url, method, body) {
       if (!d.ok) throw new Error(d.error || ('HTTP ' + r.status));
       return d;
     }));
+}
+
+// ── Self-update UI ──────────────────────────────────────────────────────────
+const UPD_PHASE_TH = { idle: 'ว่าง', verified: 'ตรวจผ่าน กำลังเริ่ม', 'waiting-consent': 'รอยืนยันติดตั้ง',
+  installing: 'กำลังติดตั้ง', restarting: 'กำลังรีสตาร์ต', done: '✓ สำเร็จ', 'rolled-back': '↩ ถอยกลับแล้ว', rejected: '✗ ปฏิเสธ' };
+const UPD_REASON_TH = { 'policy-off': 'ปิดรับอยู่', 'bad-signature': 'ลายเซ็นไม่ถูกต้อง', 'no-signature': 'ไม่มีลายเซ็น',
+  'no-pubkey': 'build นี้ไม่มี public key', 'same-version': 'เวอร์ชันเท่าเดิม', 'downgrade-blocked': 'ห้ามถอยเวอร์ชัน',
+  'below-minfrom': 'เวอร์ชันปัจจุบันต่ำเกินไป', 'wrong-platform': 'platform ไม่ตรงเครื่อง', 'unsafe-path': 'bundle มี path ต้องห้าม',
+  'hash-mismatch': 'ไฟล์ไม่ตรงลายเซ็น', 'not-paired': 'เครื่องต้นทางไม่ได้จับคู่', 'health-failed': 'บริการไม่ขึ้นหลังติดตั้ง (ถอยกลับ)',
+  'swap-failed': 'ติดตั้งล้มเหลว (ถอยกลับ)' };
+function updMsg(m) { const e = document.getElementById('upd-msg'); if (e) e.textContent = m || ''; }
+function loadUpdate() {
+  fetch(gatedUrl('/api/system/version')).then(r => r.json()).then(d => {
+    if (!d || !d.ok) return;
+    document.getElementById('upd-version').textContent = d.version || '—';
+    document.getElementById('upd-platform').textContent = d.platform || '—';
+    if (d.policy) document.getElementById('upd-policy').value = d.policy.mode || 'off';
+    renderUpdState(d.state || {});
+  }).catch(() => {});
+}
+function renderUpdState(st) {
+  const phase = st.phase || 'idle';
+  let txt = 'สถานะ: ' + (UPD_PHASE_TH[phase] || phase);
+  if (st.reason) txt += ' — ' + (UPD_REASON_TH[st.reason] || st.reason);
+  if (st.version && phase !== 'idle') txt += ' · v' + st.version;
+  if (phase === 'done' && st.managerRestartPending) txt += ' · ⚠ Manager ต้อง restart เพื่อใช้โค้ดใหม่ครบ';
+  document.getElementById('upd-status').textContent = txt;
+  const c = document.getElementById('upd-consent');
+  if (phase === 'waiting-consent') {
+    c.style.display = 'block';
+    document.getElementById('upd-consent-ver').textContent = 'v' + (st.version || '?');
+    document.getElementById('upd-consent-notes').textContent = st.notes || '';
+  } else c.style.display = 'none';
+}
+function setUpdatePolicy(mode) {
+  rsApi('/api/system/update/policy', 'POST', { mode }).then(d => { updMsg('✓ ตั้งเป็น ' + mode); }).catch(e => updMsg('✗ ' + e.message + ' (ตั้งได้เฉพาะบนจอเครื่องนี้)'));
+}
+function approveUpdate() {
+  updMsg('กำลังติดตั้ง…');
+  rsApi('/api/system/update/approve', 'POST', {}).then(d => { renderUpdState(d.state || {}); updMsg(d.ok ? '✓ ติดตั้งแล้ว' : ''); setTimeout(loadUpdate, 3000); }).catch(e => updMsg('✗ ' + e.message));
+}
+function sendUpdate() {
+  const f = document.getElementById('upd-file').files[0];
+  const to = document.getElementById('upd-to').value.trim();
+  const token = document.getElementById('upd-btoken').value;
+  const m = (s) => { document.getElementById('upd-send-msg').textContent = s; };
+  if (!f) { m('✗ เลือกไฟล์ .kpeu ก่อน'); return; }
+  if (!to) { m('✗ ใส่ IP เครื่อง B'); return; }
+  m('กำลังส่ง ' + f.name + ' → ' + to + ' …');
+  const headers = { 'Content-Type': 'application/octet-stream', 'x-b-to': to, 'x-b-from': location.hostname };
+  if (token) headers['x-b-token'] = token;
+  fetch(gatedUrl('/api/system/update/send'), { method: 'POST', headers, body: f })
+    .then(r => r.json()).then(d => {
+      if (d.ok) {
+        const ph = d.result && d.result.state && d.result.state.phase;
+        m('✓ ส่งสำเร็จ → ' + d.target + (ph ? ' · B: ' + (UPD_PHASE_TH[ph] || ph) + (ph === 'waiting-consent' ? ' (ต้องกดยืนยันบนจอ B)' : '') : ''));
+      } else {
+        const st = d.result && d.result.state;
+        m('✗ ' + (d.error || (st && st.reason ? (UPD_REASON_TH[st.reason] || st.reason) : 'ส่งไม่สำเร็จ')));
+      }
+    }).catch(e => m('✗ ' + e.message));
+}
+function rollbackUpdate() {
+  kpeConfirm({ icon: '↩', title: 'ถอยเวอร์ชัน', message: 'คืนโค้ดเป็นเวอร์ชันก่อนหน้า (จาก backup ล่าสุด)?', confirmText: 'ถอยกลับ' }).then(ok => {
+    if (!ok) return; updMsg('กำลังถอยกลับ…');
+    fetch(gatedUrl('/api/system/update/rollback'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .then(r => r.json()).then(d => { updMsg(d.ok ? '✓ ถอยกลับแล้ว' : ('✗ ' + (d.reason || d.error || ''))); setTimeout(loadUpdate, 3000); }).catch(e => updMsg('✗ ' + e.message));
+  });
 }
 // แก้ค่าทีละช่องในตาราง → PUT ทันที (host/name/listenPort/port)
 function updateSiteField(id, field, value) {

@@ -413,6 +413,7 @@ class LicenseManager {
 
 module.exports = LicenseManager;
 module.exports.canonical = canonical;
+module.exports.EMBEDDED_PUBLIC_KEY_B64 = EMBEDDED_PUBLIC_KEY_B64;   // pubkey (ไม่ลับ · verify) — reuse โดย updateManager (self-update)
 module.exports.defaultIsPi = defaultIsPi;
 module.exports.defaultPlatform = defaultPlatform;
 module.exports.defaultMachineId = defaultMachineId;
