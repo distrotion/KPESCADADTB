@@ -210,6 +210,8 @@ const QueryBufferManager = require('./queryBufferManager');
 const queryBufferManager = new QueryBufferManager(dbManager, engine);
 const PowerManager = require('./powerManager');
 const powerManager = new PowerManager(engine, datalogManager);   // datalogManager: record ต่อเนื่อง (auto-datalog ต่อมิเตอร์)
+const VisionManager = require('./visionManager');
+const visionManager = new VisionManager();   // เมนู Vision — แหล่งกล้อง (plugin) + allowlist host (proxy)
 const TimeSyncManager = require('./timeSyncManager');
 const timeSyncManager = new TimeSyncManager({ tagEngine: engine,
   onLog: (detail) => { try { activityLog.log({ category: 'system', action: 'timesync', detail, user: 'timesync', actorType: 'system' }); } catch (_) {} } });
@@ -566,6 +568,33 @@ wss.on('connection', (ws, req) => {
 // REST API
 app.get('/api/devices', (req, res) => {
   res.json(engine.getDevices());
+});
+
+// ── Vision (เมนูกล้อง · plugin-based) — sources CRUD + proxy ไป service กล้อง (allowlist กัน SSRF) ──
+app.get('/api/vision/sources', (_req, res) => res.json({ ok: true, sources: visionManager.list() }));
+app.post('/api/vision/sources', (req, res) => { try { res.json({ ok: true, source: visionManager.add(req.body || {}) }); } catch (e) { res.status(400).json({ ok: false, error: e.message }); } });
+app.put('/api/vision/sources/:id', (req, res) => { try { res.json({ ok: true, source: visionManager.update(req.params.id, req.body || {}) }); } catch (e) { res.status(400).json({ ok: false, error: e.message }); } });
+app.delete('/api/vision/sources/:id', (req, res) => res.json({ ok: visionManager.remove(req.params.id) }));
+
+// proxy: forward ไป service กล้องของ source (เลี่ยง CORS ของ browser + host มาจาก config เท่านั้น = กัน SSRF)
+//   GET  /api/vision/proxy/:id?path=/people
+//   POST /api/vision/proxy/:id?path=/enroll   body → forward · DELETE ก็ได้
+app.all('/api/vision/proxy/:id', (req, res) => {
+  const s = visionManager.get(req.params.id);
+  if (!s || !s.host) return res.status(404).json({ ok: false, error: 'ไม่พบ source' });
+  let p = String(req.query.path || '/');
+  if (!p.startsWith('/')) p = '/' + p;
+  if (p.includes('..')) return res.status(400).json({ ok: false, error: 'path ไม่ถูกต้อง' });
+  const body = ['GET', 'HEAD', 'DELETE'].includes(req.method) ? null : JSON.stringify(req.body || {});
+  const headers = { 'Content-Type': 'application/json' };
+  if (body) headers['Content-Length'] = Buffer.byteLength(body);
+  const fr = http.request({ host: s.host, port: s.port, path: p, method: req.method, headers, timeout: 8000 }, (cr) => {
+    let d = ''; cr.on('data', (c) => d += c); cr.on('end', () => { res.status(cr.statusCode || 200); let j = null; try { j = JSON.parse(d); } catch (_) {} j ? res.json(j) : res.type('text/plain').send(d.slice(0, 4000)); });
+  });
+  fr.on('error', (e) => { try { res.status(502).json({ ok: false, error: 'ต่อกล้องไม่ได้: ' + e.message }); } catch (_) {} });
+  fr.on('timeout', () => { try { fr.destroy(); res.status(504).json({ ok: false, error: 'กล้องไม่ตอบ (timeout)' }); } catch (_) {} });
+  if (body) fr.write(body);
+  fr.end();
 });
 
 // ── Serial: list พอร์ตที่มีในเครื่อง (ให้ UI เลือกตอนตั้ง serial_port/serial_bridge) ──
