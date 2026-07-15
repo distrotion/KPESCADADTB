@@ -38,6 +38,47 @@ function _accStats(acc, params) {
   return acc;
 }
 
+// ── minigraph: เก็บ series ค่าระหว่างชุบต่อ param ที่เปิด track.graph ──
+const GRAPH_EVERY_MS = 5000;   // sample ทุก ~5s (poll ถี่กว่านี้ = ข้าม)
+const GRAPH_MAX_PTS = 300;     // เกิน → downsample ครึ่ง (เว้นจุด)
+
+// สะสมจุดลง g = { t0, last, every, s:{key:{dt:[],v:[]}} } · เฉพาะ key ใน graphKeys · ignore 0 ตาม latch
+function _accSeries(g, params, graphKeys, now) {
+  if (!graphKeys || !graphKeys.size) return g;
+  g = g || { t0: now, last: 0, every: GRAPH_EVERY_MS, s: {} };
+  if (now - g.last < g.every) return g;
+  let wrote = false;
+  for (const k of graphKeys) {
+    const v = Number((params || {})[k]);
+    if (!Number.isFinite(v) || v === 0) continue;
+    const sk = g.s[k] || (g.s[k] = { dt: [], v: [] });
+    sk.dt.push(Math.round((now - g.t0) / 1000)); sk.v.push(v);
+    wrote = true;
+    if (sk.dt.length > GRAPH_MAX_PTS) {   // downsample ครึ่ง (เว้นจุดเว้นจุด) + ยืดคาบ
+      sk.dt = sk.dt.filter((_, i) => i % 2 === 0);
+      sk.v = sk.v.filter((_, i) => i % 2 === 0);
+      g.every *= 2;
+    }
+  }
+  if (wrote) g.last = now;
+  return g;
+}
+
+// แปลง g → ev.series {key:{t0,dt,v}} (เฉพาะ key ที่มีข้อมูล) · null ถ้าว่าง
+function _seriesOut(g) {
+  if (!g) return null;
+  const out = {};
+  for (const k in g.s) { if (g.s[k].dt.length) out[k] = { t0: g.t0, dt: g.s[k].dt, v: g.s[k].v }; }
+  return Object.keys(out).length ? out : null;
+}
+
+// key ของ field ที่เปิด minigraph (track.graph)
+function _graphKeys(cfg) {
+  const s = new Set();
+  for (const f of ((cfg && cfg.fields) || [])) { if (f.track && f.track.graph) s.add(f.key); }
+  return s;
+}
+
 // สรุปค่าตอน exit ตาม track ของแต่ละ field → { values (last หรือ avg), stats:{key:{min,max,avg,last}} }
 //   default (ไม่ track) = values เดิม 100% · stats = {} (ไม่แนบ · backward compatible)
 function _summarize(cfg, params, stats) {
@@ -99,7 +140,7 @@ class CarrierTracker {
     const stn = String(p.station);
     const ov = st.oven[stn] || (st.oven[stn] = { c: {}, li: null, lo: null, params: {} });
     ov.params = _latch(ov.params || {}, p.params);   // อุณหภูมิเตา "สด" ทุก poll (latch ค่าล่าสุดที่ ≠ 0) → monitor โชว์ live
-    for (const cr in ov.c) { ov.c[cr].params = _latch(ov.c[cr].params || {}, p.params); ov.c[cr].stats = _accStats(ov.c[cr].stats || {}, p.params); }   // latch ค่าล่าสุด + สะสม min/max/avg ให้ทุก carrier ที่กำลังอบ (เตาเดียวหลายชิ้น = อุณหภูมิเดียว/ช่วงเวลาต่างกัน)
+    for (const cr in ov.c) { ov.c[cr].params = _latch(ov.c[cr].params || {}, p.params); ov.c[cr].stats = _accStats(ov.c[cr].stats || {}, p.params); ov.c[cr].graph = _accSeries(ov.c[cr].graph, p.params, _graphKeys(cfg), now); }   // latch + min/max/avg + minigraph ให้ทุก carrier ที่กำลังอบ
     const valid = (v) => !(v === null || v === undefined || v === '' || !Number.isFinite(Number(v)));   // null=comms loss → คงสถานะ
     // เข้า oven (inTag เปลี่ยนเป็นเลขใหม่ที่ยังไม่อยู่ในเตา)
     if (valid(p.inId)) {
@@ -124,7 +165,7 @@ class CarrierTracker {
         }
         if (ctx.firstBoTs == null) ctx.firstBoTs = now;
         ctx.lastSeenTs = now; ctx.lastStation = p.station;
-        ov.c[inId] = { inTime: now, params: _latch({}, p.params), stats: _accStats({}, p.params) };
+        ov.c[inId] = { inTime: now, params: _latch({}, p.params), stats: _accStats({}, p.params), graph: _accSeries(null, p.params, _graphKeys(cfg), now) };
       }
       ov.li = inId;
     }
@@ -143,6 +184,8 @@ class CarrierTracker {
           const stepEv = mk('STEP', outId, p, params, ctx);
           stepEv.enterTs = rec ? rec.inTime : null; stepEv.exitTs = now; stepEv.dwell = dwellS;
           if (hasStats) stepEv.stats = summ.stats;
+          const ser = rec ? _seriesOut(rec.graph) : null;   // minigraph ช่วงอบ
+          if (ser) stepEv.series = ser;
           events.push(stepEv);
           const isFinish = !!((cfg.stations || {})[stn] || {}).finish;
           const isLast = pos === lastBySet[pset];
@@ -230,6 +273,8 @@ class CarrierTracker {
         stepEv.exitTs = now;                                            // เวลาออก
         stepEv.dwell = dwellS;
         if (hasStats) stepEv.stats = summ.stats;
+        const ser = _seriesOut(cur.graph);   // minigraph ระหว่างชุบ (เมื่อเปิด track.graph)
+        if (ser) stepEv.series = ser;
         events.push(stepEv);
         const isFinish = !!((cfg.stations || {})[String(p.station)] || {}).finish;   // จุดจบ (มีได้หลายบ่อ)
         const isLast = pos === lastBySet[pset];                         // บ่อสุดท้ายของแถวนี้
@@ -274,10 +319,11 @@ class CarrierTracker {
           }
           if (ctx.firstBoTs == null) ctx.firstBoTs = now;   // เวลาที่เข้าบ่อแรกจริง (แยกจาก register) → คำนวณ "ก่อนเข้าไลน์"
           ctx.lastSeenTs = now; ctx.lastStation = p.station;   // เห็นในบ่อล่าสุด (รีเซ็ตนาฬิกา idle-timeout)
-          st.occ[pos] = { carrier: nid, params: _latch({}, p.params), stats: _accStats({}, p.params), arriveTs: now, set: pset };   // จับเวลาเข้าบ่อ (+set กัน carrier ซ้ำข้ามแถว)
+          st.occ[pos] = { carrier: nid, params: _latch({}, p.params), stats: _accStats({}, p.params), graph: _accSeries(null, p.params, _graphKeys(cfg), now), arriveTs: now, set: pset };   // จับเวลาเข้าบ่อ (+set กัน carrier ซ้ำข้ามแถว)
         } else {
           _latch(cur.params, p.params);                // carrier เดิมยังอยู่ → latch param
           cur.stats = _accStats(cur.stats || {}, p.params);   // + สะสม min/max/avg ทุก poll
+          cur.graph = _accSeries(cur.graph, p.params, _graphKeys(cfg), now);   // + minigraph (throttle ~5s)
           const ctx = st.jobs[pset + ':' + nid];       // อัปเดตเวลาเห็นล่าสุด (กัน idle-timeout จบทั้งที่ยังอยู่บ่อ)
           if (ctx) { ctx.lastSeenTs = now; ctx.lastStation = p.station; }
         }
@@ -353,4 +399,4 @@ class CarrierTracker {
   }
 }
 
-module.exports = { CarrierTracker, _fmtDate, _latch, _accStats, _summarize };
+module.exports = { CarrierTracker, _fmtDate, _latch, _accStats, _summarize, _accSeries, _seriesOut, _graphKeys };

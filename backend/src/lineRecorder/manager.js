@@ -378,6 +378,7 @@ class LineRecorderManager {
           spec: d.spec || null,   // เกณฑ์ที่ใช้จริง (resolve แล้ว) → แสดง min–max
           dwellSp: d.dwellSp != null ? d.dwellSp : null, dwellTol: d.dwellTol != null ? d.dwellTol : null,
           dwellInSpec: d.dwellInSpec != null ? d.dwellInSpec : null,   // null = ไม่ตั้ง/เทียบเฉย ๆ
+          hasSeries: d.hasSeries === true,   // มี minigraph ในตาราง series
           ts: e.ts, source: 'event',
         };
       });
@@ -397,9 +398,18 @@ class LineRecorderManager {
         params, stats: s.stats || null, spec: s.spec || null,
         dwellSp: s.dwellSp != null ? s.dwellSp : null, dwellTol: s.dwellTol != null ? s.dwellTol : null,
         dwellInSpec: s.dwellInSpec != null ? s.dwellInSpec : null,
+        hasSeries: s.hasSeries === true,
         ts: s.ts, source: 'steps',
       };
     });
+  }
+
+  // ── minigraph: series ระหว่างชุบของงาน (จากตาราง lr_<line>_series) ──
+  async jobSeries(jobKey, { station = null, ts = null } = {}) {
+    const line = String(jobKey || '').split('|')[0];
+    const st = this.configs[line] ? this._storeFor(this.configs[line]) : this._fileStore();
+    if (typeof st.getSeries !== 'function') return [];
+    return st.getSeries({ line, jobKey, station, ts });
   }
 
   // ── export history (long CSV): 1 แถว/การเข้าบ่อ · ครบทุกรอบ (revisit) + ทุก param ──

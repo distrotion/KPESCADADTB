@@ -33,8 +33,25 @@ CREATE TABLE IF NOT EXISTS ${j} (job_key TEXT PRIMARY KEY, line TEXT, date_key T
   header TEXT DEFAULT '{}', steps TEXT DEFAULT '{}', created_at INTEGER, updated_at INTEGER);
 CREATE TABLE IF NOT EXISTS ${r} (line TEXT PRIMARY KEY, state TEXT, updated_at INTEGER);
 CREATE TABLE IF NOT EXISTS ${l} (line TEXT PRIMARY KEY, owner TEXT, label TEXT, heartbeat_ms INTEGER, updated_at INTEGER);
+CREATE TABLE IF NOT EXISTS ${this._t(line, 'series')} (job_key TEXT, station TEXT, ts INTEGER, data TEXT, PRIMARY KEY (job_key, station, ts));
 CREATE INDEX IF NOT EXISTS ${j}_dt ON ${j}(date_key);
 CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);`;
+  }
+
+  // minigraph (series ระหว่างชุบ) — 1 แถว/การเข้าบ่อ · data = { series:{key:{t0,dt,v}}, spec:{key:{min,max}} }
+  async appendSeries({ line, jobKey, station, ts, series, spec }) {
+    this.db.prepare(`INSERT OR REPLACE INTO ${this._t(line, 'series')} (job_key, station, ts, data) VALUES (?,?,?,?)`)
+      .run(jobKey, String(station), ts, JSON.stringify({ series, spec: spec || undefined }));
+  }
+
+  async getSeries({ line, jobKey, station = null, ts = null, limit = 200 } = {}) {
+    const ln = line || this._lineOf(jobKey);
+    const w = ['job_key = ?']; const p = [jobKey];
+    if (station != null && station !== '') { w.push('station = ?'); p.push(String(station)); }
+    if (ts != null) { w.push('ts = ?'); p.push(Number(ts)); }
+    p.push(Math.min(Number(limit) || 200, 1000));
+    const rows = this.db.prepare(`SELECT station, ts, data FROM ${this._t(ln, 'series')} WHERE ${w.join(' AND ')} ORDER BY ts ASC LIMIT ?`).all(...p);
+    return rows.map((r) => { let d = {}; try { d = JSON.parse(r.data || '{}'); } catch (_) {} return { station: r.station, ts: Number(r.ts), ...d }; });
   }
 
   async ensureSchema(line) {
@@ -50,7 +67,7 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);`;
     this.db.prepare(`INSERT INTO ${this._t(ev.line, 'event')} (line,job_key,type,carrier,lane,station,ts,data) VALUES (?,?,?,?,?,?,?,?)`)
       .run(ev.line, ev.jobKey, ev.type, ev.carrier, ev.lane, ev.station, ev.ts,
         JSON.stringify({ enterTs: ev.enterTs, exitTs: ev.exitTs, dwell: ev.dwell, values: ev.values, stats: ev.stats || undefined, spec: ev.spec || undefined,
-          dwellSp: ev.dwellSp, dwellTol: ev.dwellTol, dwellInSpec: ev.dwellInSpec, gap: ev.gap, run: ev.run }));
+          dwellSp: ev.dwellSp, dwellTol: ev.dwellTol, dwellInSpec: ev.dwellInSpec, hasSeries: ev.hasSeries, gap: ev.gap, run: ev.run }));
   }
 
   // 2) upsert job — header merge ด้วย json_patch · gap sticky (bitwise OR)
@@ -91,6 +108,7 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);`;
       params: step.params || {}, ...(step.stats ? { stats: step.stats } : {}), ...(step.spec ? { spec: step.spec } : {}),
       ...(step.dwellSp != null ? { dwellSp: step.dwellSp } : {}), ...(step.dwellTol != null ? { dwellTol: step.dwellTol } : {}),
       ...(step.dwellInSpec != null ? { dwellInSpec: step.dwellInSpec } : {}),
+      ...(step.hasSeries === true ? { hasSeries: true } : {}),
       inSpec: step.inSpec != null ? step.inSpec : null, ts: step.ts || Date.now(),
     };
     const row = this.db.prepare(`SELECT steps FROM ${jt} WHERE job_key=?`).get(jobKey);
@@ -185,14 +203,17 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);`;
   // reset — archive (copy เป็น <kind>_<ts>) + ล้างตัวจริง · lock ไม่แตะ
   async resetLine(line, stamp) {
     const ts = String(stamp || Date.now()).replace(/[^0-9A-Za-z_]/g, '_');
-    const j = this._t(line, 'job'), e = this._t(line, 'event'), r = this._t(line, 'register');
+    const j = this._t(line, 'job'), e = this._t(line, 'event'), r = this._t(line, 'register'), sr = this._t(line, 'series');
+    await this.ensureSchema(line);   // กัน table series ยังไม่มี (ไลน์เก่า)
     this.db.exec(`
       CREATE TABLE ${j}_${ts} AS SELECT * FROM ${j};
       CREATE TABLE ${e}_${ts} AS SELECT * FROM ${e};
       CREATE TABLE ${r}_${ts} AS SELECT * FROM ${r};
+      CREATE TABLE ${sr}_${ts} AS SELECT * FROM ${sr};
       DELETE FROM ${j};
       DELETE FROM ${e};
       DELETE FROM sqlite_sequence WHERE name='${e}';
+      DELETE FROM ${sr};
       DELETE FROM ${r};`);
     return ts;
   }

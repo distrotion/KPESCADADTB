@@ -12,12 +12,12 @@ class FileStore {
     this.file = file || (process.env.KPE_DATA_DIR
       ? path.join(process.env.KPE_DATA_DIR, 'lineRecorder-data.json')
       : path.join(__dirname, '..', '..', '..', '..', 'config', 'lineRecorder-data.json'));
-    this.db = { jobs: {}, steps: {}, events: [], register: {} };   // jobs[jobKey] · steps[jobKey][station] · events[] · register[line]
+    this.db = { jobs: {}, steps: {}, events: [], register: {}, series: [] };   // jobs[jobKey] · steps[jobKey][station] · events[] · register[line] · series[] (minigraph)
     this._dirty = false; this._timer = null;
     this._load();
   }
   _load() {
-    try { const raw = JSON.parse(fs.readFileSync(this.file, 'utf8')); if (raw && typeof raw === 'object') this.db = { jobs: raw.jobs || {}, steps: raw.steps || {}, events: raw.events || [], register: raw.register || {} }; }
+    try { const raw = JSON.parse(fs.readFileSync(this.file, 'utf8')); if (raw && typeof raw === 'object') this.db = { jobs: raw.jobs || {}, steps: raw.steps || {}, events: raw.events || [], register: raw.register || {}, series: raw.series || [] }; }
     catch (_) { /* ไฟล์ยังไม่มี = เริ่มว่าง */ }
   }
   _scheduleFlush() {
@@ -37,6 +37,21 @@ class FileStore {
   }
 
   async ensureSchema() { return true; }
+
+  // minigraph (series ระหว่างชุบ) — 1 แถว/การเข้าบ่อ · {jobKey,station,ts,series,spec}
+  async appendSeries({ jobKey, station, ts, series, spec }) {
+    this.db.series = this.db.series.filter((r) => !(r.jobKey === jobKey && r.station === String(station) && r.ts === ts));   // upsert
+    this.db.series.push({ jobKey, station: String(station), ts, series, ...(spec ? { spec } : {}) });
+    if (this.db.series.length > 20000) this.db.series.splice(0, this.db.series.length - 20000);   // กันบวมโหมดไฟล์
+    this._scheduleFlush();
+  }
+
+  async getSeries({ jobKey, station = null, ts = null, limit = 200 } = {}) {
+    let arr = this.db.series.filter((r) => r.jobKey === jobKey);
+    if (station != null && station !== '') arr = arr.filter((r) => r.station === String(station));
+    if (ts != null) arr = arr.filter((r) => r.ts === Number(ts));
+    return arr.sort((a, b) => a.ts - b.ts).slice(0, Math.min(Number(limit) || 200, 1000));
+  }
 
   // append-only event log = source of truth (เขียนก่อนเสมอ)
   async appendEvent(ev) {

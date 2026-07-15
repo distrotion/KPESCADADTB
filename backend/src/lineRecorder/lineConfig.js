@@ -39,7 +39,7 @@ function normalizeLineConfig(raw, file) {
         warn: s.warn,
       };
     })(),
-    track: (() => { const t = _obj(f.track); return { minMax: t.minMax === true, summary: t.summary === 'avg' ? 'avg' : 'last' }; })(),   // เก็บ min/max ระหว่างชุบ + สรุป last(ค่าสุดท้าย)/avg(เฉลี่ย)
+    track: (() => { const t = _obj(f.track); return { minMax: t.minMax === true, summary: t.summary === 'avg' ? 'avg' : 'last', graph: t.graph === true }; })(),   // min/max + สรุป last/avg + graph=เก็บ minigraph (series ระหว่างชุบ)
     display: { table: true, mimic: false, report: false, order: 0, ..._obj(f.display) },
   })).filter((f) => f.key);
   return {

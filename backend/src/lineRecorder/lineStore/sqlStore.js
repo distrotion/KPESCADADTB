@@ -20,7 +20,7 @@ class SqlStore {
   _lineOf(jobKey) { const s = String(jobKey || ''); const i = s.indexOf('|'); return i >= 0 ? s.slice(0, i) : s; }
 
   _ddl(line) {
-    const j = this._t(line, 'job'), e = this._t(line, 'event'), r = this._t(line, 'register'), l = this._t(line, 'lock');
+    const j = this._t(line, 'job'), e = this._t(line, 'event'), r = this._t(line, 'register'), l = this._t(line, 'lock'), s = this._t(line, 'series');
     return `
 CREATE TABLE IF NOT EXISTS ${e} (event_id bigserial PRIMARY KEY, line text, job_key text, type text,
   carrier text, lane text, station text, ts bigint, data jsonb);
@@ -29,9 +29,29 @@ CREATE TABLE IF NOT EXISTS ${j} (job_key text PRIMARY KEY, line text, date_key t
   header jsonb DEFAULT '{}'::jsonb, steps jsonb DEFAULT '{}'::jsonb, created_at bigint, updated_at bigint);
 CREATE TABLE IF NOT EXISTS ${r} (line text PRIMARY KEY, state jsonb, updated_at bigint);
 CREATE TABLE IF NOT EXISTS ${l} (line text PRIMARY KEY, owner text, label text, heartbeat_ms bigint, updated_at bigint);
+CREATE TABLE IF NOT EXISTS ${s} (job_key text, station text, ts bigint, data jsonb, PRIMARY KEY (job_key, station, ts));
 CREATE INDEX IF NOT EXISTS ${j}_dt ON ${j}(date_key);
 CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);
 `;
+  }
+
+  // minigraph (series ระหว่างชุบ) — 1 แถว/การเข้าบ่อ · data = { series:{key:{t0,dt,v}}, spec:{key:{min,max}} }
+  async appendSeries({ line, jobKey, station, ts, series, spec }) {
+    await this.pool.query(
+      `INSERT INTO ${this._t(line, 'series')} (job_key, station, ts, data) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (job_key, station, ts) DO UPDATE SET data = EXCLUDED.data`,
+      [jobKey, String(station), ts, JSON.stringify({ series, spec: spec || undefined })]);
+  }
+
+  async getSeries({ line, jobKey, station = null, ts = null, limit = 200 } = {}) {
+    const ln = line || this._lineOf(jobKey);
+    const w = ['job_key = $1']; const p = [jobKey];
+    if (station != null && station !== '') { p.push(String(station)); w.push(`station = $${p.length}`); }
+    if (ts != null) { p.push(Number(ts)); w.push(`ts = $${p.length}`); }
+    p.push(Math.min(Number(limit) || 200, 1000));
+    const { rows } = await this.pool.query(
+      `SELECT station, ts, data FROM ${this._t(ln, 'series')} WHERE ${w.join(' AND ')} ORDER BY ts ASC LIMIT $${p.length}`, p);
+    return rows.map((r) => ({ station: r.station, ts: Number(r.ts), ...(r.data || {}) }));
   }
 
   async ensureSchema(line) {
@@ -53,7 +73,7 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [ev.line, ev.jobKey, ev.type, ev.carrier, ev.lane, ev.station, ev.ts,
        JSON.stringify({ enterTs: ev.enterTs, exitTs: ev.exitTs, dwell: ev.dwell, values: ev.values, stats: ev.stats || undefined, spec: ev.spec || undefined,
-         dwellSp: ev.dwellSp, dwellTol: ev.dwellTol, dwellInSpec: ev.dwellInSpec, gap: ev.gap, run: ev.run })]);
+         dwellSp: ev.dwellSp, dwellTol: ev.dwellTol, dwellInSpec: ev.dwellInSpec, hasSeries: ev.hasSeries, gap: ev.gap, run: ev.run })]);
   }
 
   // 2) upsert job = 1 row/job · header (barcode) merge · gap sticky
@@ -94,6 +114,7 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);
       params: step.params || {}, stats: step.stats || undefined, spec: step.spec || undefined,
       dwellSp: step.dwellSp != null ? step.dwellSp : undefined, dwellTol: step.dwellTol != null ? step.dwellTol : undefined,
       dwellInSpec: step.dwellInSpec != null ? step.dwellInSpec : undefined,
+      hasSeries: step.hasSeries === true ? true : undefined,
       inSpec: step.inSpec != null ? step.inSpec : null, ts: step.ts || Date.now(),
     };
     const { rows } = await this.pool.query(
@@ -192,14 +213,17 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);
   // reset — archive (copy เป็น <kind>_<ts>) แล้ว truncate ตัวจริง · lock ไม่แตะ (owner คงเดิม)
   async resetLine(line, stamp) {
     const ts = String(stamp || Date.now()).replace(/[^0-9A-Za-z_]/g, '_');
-    const j = this._t(line, 'job'), e = this._t(line, 'event'), r = this._t(line, 'register');
+    const j = this._t(line, 'job'), e = this._t(line, 'event'), r = this._t(line, 'register'), sr = this._t(line, 'series');
+    await this.ensureSchema(line);   // กัน table series ยังไม่มี (ไลน์เก่า) → archive ไม่พัง
     await this.pool.query(`
       CREATE TABLE ${j}_${ts} AS TABLE ${j};
       CREATE TABLE ${e}_${ts} AS TABLE ${e};
       CREATE TABLE ${r}_${ts} AS TABLE ${r};
+      CREATE TABLE ${sr}_${ts} AS TABLE ${sr};
       TRUNCATE ${j};
       TRUNCATE ${e} RESTART IDENTITY;
       TRUNCATE ${r};
+      TRUNCATE ${sr};
     `);
     return ts;
   }

@@ -62,6 +62,13 @@ function mountLineRecorder(app, manager) {
   app.get('/api/line-recorder/jobs/:jobKey/path', async (req, res) => {
     try { res.json({ ok: true, path: await manager.jobPath(decodeURIComponent(req.params.jobKey)) }); } catch (e) { se(res, e); }
   });
+  // minigraph: series ระหว่างชุบ (ตาราง lr_<line>_series · แนบเกณฑ์ spec ที่ resolve แล้ว)
+  app.get('/api/line-recorder/jobs/:jobKey/series', async (req, res) => {
+    try {
+      res.json({ ok: true, rows: await manager.jobSeries(decodeURIComponent(req.params.jobKey), {
+        station: req.query.station || null, ts: req.query.ts != null ? Number(req.query.ts) : null }) });
+    } catch (e) { se(res, e); }
+  });
   // export history (long CSV) — 1 แถว/การเข้าบ่อ · ครบทุกรอบ + ทุก param
   app.get('/api/line-recorder/export', async (req, res) => {
     try {

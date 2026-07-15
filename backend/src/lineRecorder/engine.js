@@ -108,7 +108,8 @@ class LineEngine {
       }
     }
 
-    await store.appendEvent({ ...ev, spec: specMap,
+    await store.appendEvent({ ...ev, spec: specMap, series: undefined,   // series แยกตาราง (ไม่ฝังใน event — กัน event บวม)
+      hasSeries: ev.series ? true : undefined,
       dwellSp: dwellSp != null ? dwellSp : undefined, dwellTol: dwellTol != null ? dwellTol : undefined,
       dwellInSpec: dwellInSpec != null ? dwellInSpec : undefined, jobKey, ts });   // 1) source of truth ก่อนเสมอ
 
@@ -145,8 +146,14 @@ class LineEngine {
         stats: ev.stats || null,   // min/max/avg ต่อ param (เมื่อเปิด track) · null = ไม่ track
         spec: specMap,   // เกณฑ์ที่ resolve แล้ว (tag/offset) ณ ตอนนั้น · null = ไม่มีเกณฑ์
         dwellSp, dwellTol, dwellInSpec,   // time setpoint (resolve แล้ว) + ผลตัดสิน (null = เทียบเฉย ๆ)
+        hasSeries: ev.series ? true : null,   // มี minigraph ในตาราง series (ปุ่ม 📈 เปิดกราฟ LR เอง)
         inSpec: violations.length === 0, ts,
       });
+      // minigraph → ตารางแยก lr_<line>_series (1 แถว/การเข้าบ่อ) · แนบเกณฑ์ spec ที่ resolve แล้ว (ถ้ามี)
+      if (ev.series && typeof store.appendSeries === 'function') {
+        try { await store.appendSeries({ line: ev.line, jobKey, station: String(ev.station), ts, series: ev.series, spec: specMap }); }
+        catch (e) { console.error(`[lineRecorder] appendSeries ${ev.line}/${ev.station}:`, e.message); }
+      }
     }
     return { jobKey, job, step, violations };
   }
