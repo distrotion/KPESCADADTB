@@ -20,6 +20,7 @@
 'use strict';
 const { parentPort, workerData } = require('worker_threads');
 const { dateExpr } = require('./placeholderResolver');   // pure/local — date คำนวณในเธรดได้ (tz เดียวกับ main · ไม่ต้อง RPC)
+const { createPresets } = require('./scriptPresets');    // ฟังก์ชันสำเร็จรูป (weighCycle ฯลฯ) — ดู docs/SCRIPT-PRESETS.md
 
 const { code, trigger, snapshot, state } = workerData;
 const _state = (state && typeof state === 'object') ? state : {};   // จำค่าข้ามการยิง (main ส่งเข้า/คืนออก)
@@ -201,6 +202,15 @@ function buildContext() {
     console: { log: (...a) => emitLog('info', ...a),
                error: (...a) => emitLog('error', ...a),
                warn: (...a) => emitLog('warn', ...a) },
+    // ── ฟังก์ชันสำเร็จรูป (stateful · จำค่าผ่าน state.__presets) — ดู docs/SCRIPT-PRESETS.md ──
+    //   io: ให้ preset อ่าน/เขียน tag เองได้ (เช่น mirrorStatus ส่ง __online เข้า PLC)
+    ...createPresets(_state, undefined, {
+      tag: (deviceId, tagId) => { const m = findTag(deviceId, tagId); return m ? m.value : null; },
+      setTag: (deviceId, tagId, value) => {
+        rpc('writeTag', [deviceId, tagId, value])
+          .catch((e) => emitLog('error', `setTag ${deviceId}.${tagId}: ${e.message}`));
+      },
+    }),
   };
 }
 

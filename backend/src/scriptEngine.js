@@ -19,6 +19,9 @@
  *   log(...)               → log (ดูได้ในหน้า Scripts)
  *   now()                  → Date ปัจจุบัน
  *   Math, JSON, Date, Number, String, parseInt, parseFloat
+ *   state                  → object จำค่าข้ามการยิง (persist ให้อัตโนมัติ)
+ *   ── ฟังก์ชันสำเร็จรูป (preset · ดู docs/SCRIPT-PRESETS.md) ──
+ *   weighCycle(key,value,opts) → จับ 1 รอบชั่ง (peak-hold) · คืน {weighing,peak,valley,done}
  *
  * ตัวอย่าง (ลง PostgreSQL ทุก 1 วินาที):
  *   const temp = tag('plc_1', 'D100');
@@ -36,6 +39,7 @@ const vm   = require('vm');
 const db   = require('./dbHelper');
 const csv  = require('./csvUtil');
 const { dateExpr } = require('./placeholderResolver');
+const { createPresets } = require('./scriptPresets');   // ฟังก์ชันสำเร็จรูป — ดู docs/SCRIPT-PRESETS.md
 const { Worker } = require('worker_threads');
 
 const WORKER_FILE = path.join(__dirname, 'scriptWorker.js');
@@ -469,6 +473,9 @@ class ScriptEngine {
 
   _buildContext(s, trigger) {
     const self = this;
+    // §state: จำค่าข้ามการยิงในโหมด non-sandbox ด้วย (parity กับ worker · presets ใช้ state.__presets)
+    let state = this._scriptState.get(s.id);
+    if (!state || typeof state !== 'object') { state = {}; this._scriptState.set(s.id, state); }
     return {
       // tag access
       tag: (deviceId, tagId) => {
@@ -611,6 +618,16 @@ class ScriptEngine {
       },
       Math, JSON, Date, Number, String, parseInt, parseFloat, isNaN,
       console: { log: (...a) => self._log(s.id, 'info', a.join(' ')) },
+      // state ที่ script แก้ได้ (จำข้ามการยิง) + ฟังก์ชันสำเร็จรูป — ดู docs/SCRIPT-PRESETS.md
+      //   io: ให้ preset อ่าน/เขียน tag เองได้ (เช่น mirrorStatus ส่ง __online เข้า PLC)
+      state,
+      ...createPresets(state, undefined, {
+        tag: (deviceId, tagId) => { const v = self.tagEngine.getTagValue(deviceId, tagId); return v ? v.value : null; },
+        setTag: (deviceId, tagId, value) => {
+          self.tagEngine.writeTag(deviceId, tagId, value)
+            .catch((e) => self._log(s.id, 'error', `setTag ${deviceId}.${tagId}: ${e.message}`));
+        },
+      }),
     };
   }
 
