@@ -44,6 +44,37 @@ function mountLineRecorder(app, manager) {
   app.post('/api/line-recorder/lines/:line/comment', async (req, res) => {
     try { res.json(await manager.setComment(req.params.line, req.body || {})); } catch (e) { se(res, e); }
   });
+  // ── measure (ค่าที่คนวัดเอง · คีย์ผ่านมือถือ) ────────────────────────────────
+  // ยิง barcode → งาน + บ่อที่อยู่ตอนนี้ + field ที่ต้องวัดในบ่อนั้น (ให้ UI มือถือโชว์)
+  app.get('/api/line-recorder/lines/:line/scan', async (req, res) => {
+    try {
+      const line = req.params.line;
+      const r = await manager.resolveByBarcode(line, req.query.barcode);
+      const cfg = manager.getConfig(line) || {};
+      res.json({ ok: true, job: r.job, station: r.station, inLine: !!r.inLine, ambiguous: !!r.ambiguous,
+        fields: manager.measureFields(line, r.station), measure: cfg.measure || {} });
+    } catch (e) { se(res, e); }
+  });
+  // บันทึก 1 ครั้งที่วัด (append · ไม่ทับ) — body { barcode|jobKey, key, value, station?, actor?, note? }
+  app.post('/api/line-recorder/lines/:line/measure', async (req, res) => {
+    try {
+      const b = req.body || {};
+      const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '';
+      res.json(await manager.addMeasure(req.params.line, { ...b, ip }));
+    } catch (e) { se(res, e); }
+  });
+  // ค่าที่วัดของงาน (ไปโชว์ในรายงาน) — ?jobKey= &key= &limit=
+  app.get('/api/line-recorder/lines/:line/measures', async (req, res) => {
+    try {
+      const q = req.query || {};
+      res.json({ ok: true, measures: await manager.measures(req.params.line, { jobKey: q.jobKey, key: q.key, limit: q.limit }) });
+    } catch (e) { se(res, e); }
+  });
+  // ลบค่าที่คีย์ผิด (undo) — append-only แต่ลบรายแถวได้
+  app.delete('/api/line-recorder/lines/:line/measure/:id', async (req, res) => {
+    try { res.json({ ok: await manager.deleteMeasure(req.params.line, req.params.id) }); } catch (e) { se(res, e); }
+  });
+
   // ยกเลิกมือ — carrier ค้างในเตา (เข้าเตาแต่ไม่มีเลขออก) → บันทึก manual cancel — body { station, carrier }
   app.post('/api/line-recorder/lines/:line/oven-cancel', async (req, res) => {
     try { const b = req.body || {}; res.json(await manager.cancelOven(req.params.line, b.station, b.carrier)); } catch (e) { se(res, e); }

@@ -12,12 +12,12 @@ class FileStore {
     this.file = file || (process.env.KPE_DATA_DIR
       ? path.join(process.env.KPE_DATA_DIR, 'lineRecorder-data.json')
       : path.join(__dirname, '..', '..', '..', '..', 'config', 'lineRecorder-data.json'));
-    this.db = { jobs: {}, steps: {}, events: [], register: {}, series: [] };   // jobs[jobKey] · steps[jobKey][station] · events[] · register[line] · series[] (minigraph)
+    this.db = { jobs: {}, steps: {}, events: [], register: {}, series: [], measures: [] };   // jobs[jobKey] · steps[jobKey][station] · events[] · register[line] · series[] (minigraph)
     this._dirty = false; this._timer = null;
     this._load();
   }
   _load() {
-    try { const raw = JSON.parse(fs.readFileSync(this.file, 'utf8')); if (raw && typeof raw === 'object') this.db = { jobs: raw.jobs || {}, steps: raw.steps || {}, events: raw.events || [], register: raw.register || {}, series: raw.series || [] }; }
+    try { const raw = JSON.parse(fs.readFileSync(this.file, 'utf8')); if (raw && typeof raw === 'object') this.db = { jobs: raw.jobs || {}, steps: raw.steps || {}, events: raw.events || [], register: raw.register || {}, series: raw.series || [], measures: raw.measures || [] }; }
     catch (_) { /* ไฟล์ยังไม่มี = เริ่มว่าง */ }
   }
   _scheduleFlush() {
@@ -51,6 +51,27 @@ class FileStore {
     if (station != null && station !== '') arr = arr.filter((r) => r.station === String(station));
     if (ts != null) arr = arr.filter((r) => r.ts === Number(ts));
     return arr.sort((a, b) => a.ts - b.ts).slice(0, Math.min(Number(limit) || 200, 1000));
+  }
+
+  // ค่าที่คนวัดเอง (measure) — append อย่างเดียว 1 แถว/ครั้งที่วัด (ไม่ทับ)
+  async appendMeasure(m) {
+    this.db.measures.push({ id: this.db.measures.length + 1, ...m });
+    if (this.db.measures.length > 50000) this.db.measures.splice(0, this.db.measures.length - 50000);
+    this._scheduleFlush();
+    return this.db.measures[this.db.measures.length - 1];
+  }
+
+  async listMeasures({ jobKey = null, key = null, limit = 500 } = {}) {
+    let arr = this.db.measures;
+    if (jobKey) arr = arr.filter((r) => r.jobKey === jobKey);
+    if (key) arr = arr.filter((r) => r.key === key);
+    return arr.slice().sort((a, b) => a.ts - b.ts).slice(0, Math.min(Number(limit) || 500, 5000));
+  }
+
+  async deleteMeasure(id) {
+    const i = this.db.measures.findIndex((r) => String(r.id) === String(id));
+    if (i < 0) return false;
+    this.db.measures.splice(i, 1); this._scheduleFlush(); return true;
   }
 
   // append-only event log = source of truth (เขียนก่อนเสมอ)

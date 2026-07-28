@@ -645,12 +645,18 @@ app.post('/api/system/update/rollback', (req, res) => { if (blockedNow()) return
 
 // รับ bundle (application/octet-stream · stream ลงไฟล์) → verify ลายเซ็นก่อนแตก tar เต็ม (#1) → install
 const UPDATE_MAX_BYTES = 600 * 1024 * 1024;   // cap 600MB (#3 · กันดิสก์เต็ม/SD Pi)
-app.post('/api/system/update', (req, res) => {
+//   consented=false → รับ push ข้ามเครื่อง (เคารพ policy=off) · consented=true → อัปโหลดมือ "ลงเครื่องนี้"
+//   (loopback = จอเครื่องนี้/UI proxy) = ยืนยันในตัว ข้าม toggle "รับอัปเดต" · ด่านลายเซ็น/platform/hash ยังบังคับครบ
+function handleUpdateUpload(req, res, { consented }) {
   if (blockedNow()) return res.status(403).json({ ok: false, error: 'license' });
-  if (updater.policy().mode === 'off') return res.status(403).json({ ok: false, error: 'self-update ปิดอยู่ (policy=off) — เปิดบนจอเครื่องนี้ก่อน' });
+  if (consented) {
+    if (!isLoopback(req)) return res.status(403).json({ ok: false, error: 'ติดตั้งลงเครื่องนี้ได้เฉพาะบนจอเครื่องนี้ (loopback)' });
+  } else if (updater.policy().mode === 'off') {
+    return res.status(403).json({ ok: false, error: 'self-update ปิดอยู่ (policy=off) — เปิดบนจอเครื่องนี้ก่อน' });
+  }
   const clen = parseInt(req.headers['content-length'], 10) || 0;
   if (clen > UPDATE_MAX_BYTES) return res.status(413).json({ ok: false, error: `bundle ใหญ่เกิน (${(clen / 1048576) | 0}MB > ${UPDATE_MAX_BYTES / 1048576 | 0}MB)` });
-  const from = req.headers['x-update-from'] || null;
+  const from = req.headers['x-update-from'] || (consented ? 'local-upload' : null);
   const allowDowngrade = req.headers['x-allow-downgrade'] === '1';
   try { fs.mkdirSync(UPDATE_DIR, { recursive: true }); } catch (_) {}
   const inc = path.join(UPDATE_DIR, 'incoming.kpeu');
@@ -674,12 +680,14 @@ app.post('/api/system/update', (req, res) => {
       if (!pre.ok) return res.json({ ok: false, state: updater.noteRejected(pre.reason, pre.version) });
       // ผ่านลายเซ็นแล้ว (vendor-signed) → แตก payload ทั้งชุด + verify hash + policy + install
       tar.execFileSync('tar', ['-xzf', inc, '-C', ex], { stdio: 'ignore', timeout: 180000 });
-      const st = await updater.receiveExtracted(ex, { from, allowDowngrade });
+      const st = await updater.receiveExtracted(ex, { from, allowDowngrade, consented });
       res.json({ ok: st.phase === 'done' || st.phase === 'waiting-consent', state: st });
     } catch (e) { try { res.status(400).json({ ok: false, error: e.message }); } catch (_) {} }
   });
   req.pipe(ws);
-});
+}
+app.post('/api/system/update', (req, res) => handleUpdateUpload(req, res, { consented: false }));
+app.post('/api/system/update/local', (req, res) => handleUpdateUpload(req, res, { consented: true }));   // อัปโหลด .kpeu ลงเครื่องนี้ตรง ๆ (browser)
 
 // A-side: อัปโหลด bundle มาที่ Manager นี้ → relay ต่อไปเครื่อง B (เก็บ token ฝั่ง server · เลี่ยง CORS ของ browser)
 //   header: x-b-to (IP หรือ IP:port ของ B) · x-b-token (API token ของ B) · x-b-from · x-b-downgrade

@@ -23,8 +23,10 @@ function normalizeLineConfig(raw, file) {
     label: String(f.label || f.key || '').trim(),
     type: ['number', 'text', 'bool', 'time'].includes(f.type) ? f.type : 'number',
     unit: String(f.unit || ''), decimals: Number(f.decimals) || 0,
-    scope: f.scope === 'job' ? 'job' : 'step',
+    scope: ['job', 'measure'].includes(f.scope) ? f.scope : 'step',   // measure = ค่าที่คนวัดเอง (คีย์ผ่านมือถือ · เก็บทุกครั้ง)
     station: f.station != null ? String(f.station) : null,
+    stations: _arr(f.stations).map((x) => String(x)).filter(Boolean),   // measure: บ่อที่ให้วัด (ว่าง = ทุกบ่อ)
+    show: f.show === 'avg' ? 'avg' : (f.show === 'all' ? 'all' : 'last'),   // measure: รายงานโชว์ ค่าล่าสุด(default)/เฉลี่ย/ทุกค่า
     source: _obj(f.source),                                  // {kind:plc|manual|formula, index|expr}
     tag: _obj(f.tag),                                        // {device,tag} — job-field อ่านจาก tag (เช่น barcode)
     spec: (() => {                                           // เกณฑ์ in-spec 2 mode: minmax(เลข/tag ต่อตัว) | offset(tag อ้างอิง ± offset)
@@ -39,7 +41,11 @@ function normalizeLineConfig(raw, file) {
         warn: s.warn,
       };
     })(),
-    track: (() => { const t = _obj(f.track); return { minMax: t.minMax === true, summary: t.summary === 'avg' ? 'avg' : 'last', graph: t.graph === true }; })(),   // min/max + สรุป last/avg + graph=เก็บ minigraph (series ระหว่างชุบ)
+    track: (() => {
+      const t = _obj(f.track);
+      const sum = ['avg', 'mid'].includes(t.summary) ? t.summary : 'last';   // last=ค่าตอนออก · avg=เฉลี่ย · mid=ค่ากลางเวลาในบ่อ
+      return { minMax: t.minMax === true, summary: sum, graph: t.graph === true };
+    })(),   // min/max + สรุป last/avg/mid + graph=เก็บ minigraph (series ระหว่างชุบ)
     display: { table: true, mimic: false, report: false, order: 0, ..._obj(f.display) },
   })).filter((f) => f.key);
   return {
@@ -47,6 +53,15 @@ function normalizeLineConfig(raw, file) {
     source, decode, events,
     lanes: _obj(c.lanes), stations, fields,
     setNotes: _obj(c.setNotes),   // comment ต่อแถว (set → หมายเหตุ · แก้จากหน้า monitor)
+    // ค่าที่คนวัดเอง (measure) — ตั้งค่าระดับไลน์ · field อยู่ใน fields[] ที่ scope='measure'
+    measure: (() => {
+      const m = _obj(c.measure);
+      return {
+        actorMode: ['login', 'device'].includes(m.actorMode) ? m.actorMode : 'list',   // ใครคีย์: list(เลือกชื่อ)/login/device
+        actors: _arr(m.actors).map((x) => String(x).trim()).filter(Boolean),           // รายชื่อพนักงาน (actorMode=list)
+        acceptWhenNotInLine: m.acceptWhenNotInLine !== false,                          // งานไม่ได้อยู่ในบ่อ → ยังบันทึกได้ (default: ได้)
+      };
+    })(),
     _file: file || '',
   };
 }

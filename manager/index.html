@@ -561,6 +561,16 @@ button:disabled{opacity:.35;cursor:default}
       <div id="upd-consent-notes" style="color:var(--dim);font-size:11.5px;margin:4px 0 8px"></div>
       <button onclick="approveUpdate()" style="background:#16a34a;color:#fff;border:0;border-radius:6px;padding:8px 16px;font-weight:700;cursor:pointer">✓ ติดตั้งเลย</button>
     </div>
+    <!-- อัปโหลด .kpeu ลงเครื่องนี้ตรง ๆ — เปิดหน้านี้ได้ = อัปได้ (ไม่ต้องแตะ toggle "รับอัปเดต") -->
+    <div style="border-top:1px dashed var(--border);margin-top:6px;padding:10px 2px 2px">
+      <div style="font-size:12px;color:#34d399;font-weight:700;margin-bottom:6px">📥 ติดตั้ง .kpeu ลงเครื่องนี้ (ตรง ๆ)</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:12px">
+        <input type="file" id="upd-local-file" accept=".kpeu" style="font-size:11px;color:var(--dim);max-width:210px">
+        <button onclick="installLocalUpdate()" style="background:#16a34a;color:#fff;border:0;border-radius:6px;padding:8px 16px;font-weight:700;cursor:pointer">📥 ติดตั้งลงเครื่องนี้</button>
+        <span id="upd-local-msg" style="font-size:11.5px;color:var(--dim)"></span>
+      </div>
+      <div style="font-size:10.5px;color:var(--dim);margin-top:6px">เลือกไฟล์ <code>.kpeu</code> (ผู้ขายเซ็นแล้ว · platform ตรงเครื่องนี้) → กดติดตั้งได้เลย — <strong>ไม่ต้องเปิด "รับอัปเดต"</strong> · ตรวจลายเซ็น/version อัตโนมัติ · setting/ข้อมูล/license ไม่โดนแตะ · เสร็จแล้ว restart เอง</div>
+    </div>
     <div style="display:flex;gap:8px;align-items:center;padding:6px 2px;flex-wrap:wrap;border-top:1px dashed var(--border);margin-top:4px">
       <button onclick="rollbackUpdate()" style="background:#374151;color:#e5e7eb;border:0;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer">↩ ถอยเวอร์ชันก่อนหน้า</button>
       <span id="upd-msg" style="font-size:11.5px;color:var(--dim)"></span>
@@ -1249,6 +1259,22 @@ function sendUpdate() {
         const st = d.result && d.result.state;
         m('✗ ' + (d.error || (st && st.reason ? (UPD_REASON_TH[st.reason] || st.reason) : 'ส่งไม่สำเร็จ')));
       }
+    }).catch(e => m('✗ ' + e.message));
+}
+// อัปโหลด .kpeu ลงเครื่องนี้ตรง ๆ (loopback = ยืนยันในตัว · ข้าม toggle "รับอัปเดต")
+function installLocalUpdate() {
+  const f = document.getElementById('upd-local-file').files[0];
+  const m = (s) => { document.getElementById('upd-local-msg').textContent = s; };
+  if (!f) { m('✗ เลือกไฟล์ .kpeu ก่อน'); return; }
+  if (!/\.kpeu$/i.test(f.name)) { m('✗ ต้องเป็นไฟล์ .kpeu'); return; }
+  m('กำลังติดตั้ง ' + f.name + ' …');
+  fetch(gatedUrl('/api/system/update/local'), { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f })
+    .then(r => r.json()).then(d => {
+      const st = d.state || {};
+      if (d.ok) m('✓ ' + (UPD_PHASE_TH[st.phase] || st.phase || 'สำเร็จ') + ' — เครื่องกำลัง restart');
+      else m('✗ ' + (d.error || (st.reason ? (UPD_REASON_TH[st.reason] || st.reason) : 'ติดตั้งไม่สำเร็จ')));
+      renderUpdState(st);
+      setTimeout(loadUpdate, 3000);
     }).catch(e => m('✗ ' + e.message));
 }
 function rollbackUpdate() {

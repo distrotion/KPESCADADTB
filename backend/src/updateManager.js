@@ -145,7 +145,7 @@ class UpdateManager {
     return st;
   }
 
-  async receiveExtracted(dir, { from = null, allowDowngrade = false } = {}) {
+  async receiveExtracted(dir, { from = null, allowDowngrade = false, consented = false } = {}) {
     if (!this._root) throw new Error('updateManager: ไม่ได้ตั้ง root (verify-only)');
     if (this._busy) return { phase: 'rejected', reason: 'busy' };   // กันติดตั้งซ้อน (#2)
     let manifest, sig;
@@ -162,12 +162,17 @@ class UpdateManager {
     if (!ph.ok) return this._setState({ phase: 'rejected', reason: 'hash-mismatch', version: chk.version, mismatch: ph.mismatch.slice(0, 5) });
 
     const pol = this.policy();
-    if (pol.mode === 'off') return this._setState({ phase: 'rejected', reason: 'policy-off', version: chk.version });
-    if (pol.mode === 'auto' && from && pol.pairedFrom.length && !pol.pairedFrom.includes(from)) return this._setState({ phase: 'rejected', reason: 'not-paired', version: chk.version });
+    // consented = อัปโหลดมือบนจอเครื่องนี้ (loopback) = ยืนยันในตัว → ข้าม policy gate + ติดตั้งเลย
+    // (ด่านลายเซ็น/version/platform/hash/unsafe-path/busy ด้านบน ยังบังคับครบ)
+    if (!consented) {
+      if (pol.mode === 'off') return this._setState({ phase: 'rejected', reason: 'policy-off', version: chk.version });
+      if (pol.mode === 'auto' && from && pol.pairedFrom.length && !pol.pairedFrom.includes(from)) return this._setState({ phase: 'rejected', reason: 'not-paired', version: chk.version });
+    }
 
     // staging = payload ที่ verify แล้ว (ให้ install() ใช้) · เก็บ path ไว้ใน state
-    this._setState({ phase: pol.mode === 'manual' ? 'waiting-consent' : 'verified', version: chk.version, from, staging: path.join(dir, 'payload'), manifestFiles: Object.keys(manifest.files), notes: manifest.notes || '' });
-    if (pol.mode === 'auto') return this.install();
+    const installNow = consented || pol.mode === 'auto';
+    this._setState({ phase: installNow ? 'verified' : 'waiting-consent', version: chk.version, from, staging: path.join(dir, 'payload'), manifestFiles: Object.keys(manifest.files), notes: manifest.notes || '' });
+    if (installNow) return this.install();
     return this.getState();   // manual → รอ approve()
   }
 

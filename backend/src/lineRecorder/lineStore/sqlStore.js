@@ -20,7 +20,7 @@ class SqlStore {
   _lineOf(jobKey) { const s = String(jobKey || ''); const i = s.indexOf('|'); return i >= 0 ? s.slice(0, i) : s; }
 
   _ddl(line) {
-    const j = this._t(line, 'job'), e = this._t(line, 'event'), r = this._t(line, 'register'), l = this._t(line, 'lock'), s = this._t(line, 'series');
+    const j = this._t(line, 'job'), e = this._t(line, 'event'), r = this._t(line, 'register'), l = this._t(line, 'lock'), s = this._t(line, 'series'), m = this._t(line, 'measure');
     return `
 CREATE TABLE IF NOT EXISTS ${e} (event_id bigserial PRIMARY KEY, line text, job_key text, type text,
   carrier text, lane text, station text, ts bigint, data jsonb);
@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS ${j} (job_key text PRIMARY KEY, line text, date_key t
 CREATE TABLE IF NOT EXISTS ${r} (line text PRIMARY KEY, state jsonb, updated_at bigint);
 CREATE TABLE IF NOT EXISTS ${l} (line text PRIMARY KEY, owner text, label text, heartbeat_ms bigint, updated_at bigint);
 CREATE TABLE IF NOT EXISTS ${s} (job_key text, station text, ts bigint, data jsonb, PRIMARY KEY (job_key, station, ts));
+CREATE TABLE IF NOT EXISTS ${m} (measure_id bigserial PRIMARY KEY, job_key text, station text, pass_no int,
+  key text, value double precision, text_value text, ts bigint, actor text, actor_mode text, ip text, note text, flags jsonb);
+CREATE INDEX IF NOT EXISTS ${m}_jk ON ${m}(job_key);
 CREATE INDEX IF NOT EXISTS ${j}_dt ON ${j}(date_key);
 CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);
 `;
@@ -52,6 +55,39 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);
     const { rows } = await this.pool.query(
       `SELECT station, ts, data FROM ${this._t(ln, 'series')} WHERE ${w.join(' AND ')} ORDER BY ts ASC LIMIT $${p.length}`, p);
     return rows.map((r) => ({ station: r.station, ts: Number(r.ts), ...(r.data || {}) }));
+  }
+
+  // ── ค่าที่คนวัดเอง (measure) — append อย่างเดียว 1 แถว/ครั้งที่วัด (ไม่ทับ · เก็บครบทุกใบ) ──
+  async appendMeasure({ line, jobKey, station, passNo, key, value, textValue, ts, actor, actorMode, ip, note, flags }) {
+    const ln = line || this._lineOf(jobKey);
+    const { rows } = await this.pool.query(
+      `INSERT INTO ${this._t(ln, 'measure')} (job_key, station, pass_no, key, value, text_value, ts, actor, actor_mode, ip, note, flags)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING measure_id`,
+      [jobKey, station != null ? String(station) : null, passNo != null ? Number(passNo) : null, String(key),
+       value != null ? Number(value) : null, textValue != null ? String(textValue) : null, Number(ts),
+       actor || null, actorMode || null, ip || null, note || null, JSON.stringify(flags || {})]);
+    return { id: rows[0] && rows[0].measure_id };
+  }
+
+  async listMeasures({ line = null, jobKey = null, key = null, limit = 500 } = {}) {
+    const ln = line || this._lineOf(jobKey);
+    const w = []; const p = [];
+    if (jobKey) { p.push(jobKey); w.push(`job_key = $${p.length}`); }
+    if (key) { p.push(String(key)); w.push(`key = $${p.length}`); }
+    p.push(Math.min(Number(limit) || 500, 5000));
+    const { rows } = await this.pool.query(
+      `SELECT measure_id, job_key, station, pass_no, key, value, text_value, ts, actor, actor_mode, ip, note, flags
+         FROM ${this._t(ln, 'measure')} ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY ts ASC LIMIT $${p.length}`, p);
+    return rows.map((r) => ({
+      id: r.measure_id, jobKey: r.job_key, station: r.station, passNo: r.pass_no, key: r.key,
+      value: r.value != null ? Number(r.value) : null, textValue: r.text_value, ts: Number(r.ts),
+      actor: r.actor, actorMode: r.actor_mode, ip: r.ip, note: r.note, flags: r.flags || {},
+    }));
+  }
+
+  async deleteMeasure(id, line) {
+    const { rowCount } = await this.pool.query(`DELETE FROM ${this._t(line, 'measure')} WHERE measure_id = $1`, [Number(id)]);
+    return rowCount > 0;
   }
 
   async ensureSchema(line) {

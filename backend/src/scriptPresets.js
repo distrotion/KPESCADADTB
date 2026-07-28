@@ -29,10 +29,15 @@ function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
  *   value ขึ้นเหนือ startOffset → เริ่มชั่ง (จับ peak/valley) → ตกลงถึง/ต่ำกว่า
  *   endOffset → จบรอบ (คายผล) แล้ววนรอรอบใหม่.
  *
- *   opts: { startOffset=0, endOffset=0, minPeak=null }
+ *   opts: { startOffset=0, endOffset=0, minPeak=null, gate=true }
  *     startOffset  ค่าที่ต้อง "ขึ้นเกิน" ถึงเริ่มนับ (0 หรือต่ำกว่าได้ · ติดลบได้)
  *     endOffset    ค่าที่ต้อง "ตกถึง/ต่ำกว่า" ถึงจบรอบ (แยกจาก start เพื่อ hysteresis)
  *     minPeak      ถ้ากำหนด: รอบที่ peak ไม่ถึงค่านี้ = ทิ้ง (ไม่นับ done · กันรอบปลอม)
+ *     gate         boolean "กำลังใส่จริง" (default true = พฤติกรรมเดิม) — คุมเฉพาะ peak/valley
+ *                  ไม่คุมการเริ่ม/จบรอบ (รอบยังเริ่ม-จบตามน้ำหนักปกติเสมอ):
+ *                  · sample ที่ gate=true → นับเข้า peak/valley  · gate=false → ข้าม
+ *                  · ถ้าทั้งรอบ "มี" gate=true บ้าง → peak = max เฉพาะช่วง true (กัน spike ตอนหยิบ)
+ *                  · ถ้าทั้งรอบ "ไม่มี" gate=true เลย → peak ยึดแบบเดิม (max ทุก sample · ไม่ทำรอบหาย)
  *
  *   คืน: {
  *     weighing: bool,          กำลังชั่งอยู่มั้ย
@@ -55,13 +60,18 @@ function weighCycle(state, now, key, value, opts = {}) {
   const startOffset = num(opts.startOffset) ?? 0;
   const endOffset   = num(opts.endOffset) ?? 0;
   const minPeak     = opts.minPeak == null ? null : num(opts.minPeak);
+  const gate        = opts.gate == null ? true : !!opts.gate;
 
   const v = num(value);
   const idle = () => ({ weighing: false, peak: 0, valley: 0, done: null });
+  // peak/valley ที่ "ใช้จริง" = ตัว gate ถ้ามี · ไม่มีเลย fallback เป็นตัว all (แบบเดิม)
+  const usePeak    = () => (st.peak    != null ? st.peak    : (st.peakAll   ?? 0));
+  const useValley  = () => (st.valley  != null ? st.valley  : (st.valleyAll ?? 0));
+  const usePeakTs  = () => (st.peak    != null ? st.peakTs  : st.peakAllTs);
   // NaN/ค่าเพี้ยน → ไม่ขยับ state (guard เงียบ ตาม safe defaults)
   if (v === null) {
     return st.phase === 'weighing'
-      ? { weighing: true, peak: st.peak ?? 0, valley: st.valley ?? 0, done: null }
+      ? { weighing: true, peak: usePeak(), valley: useValley(), done: null }
       : idle();
   }
 
@@ -69,12 +79,13 @@ function weighCycle(state, now, key, value, opts = {}) {
 
   if (st.phase === 'weighing') {
     if (v <= endOffset) {                     // ขอบขาลง — จบรอบ (ไม่พับ sample ปิดเข้า peak/valley)
-      const peakTs = st.peakTs ?? st.startTs ?? now;
       const startTs = st.startTs ?? now;
-      if (minPeak == null || (st.peak ?? -Infinity) >= minPeak) {
+      const peakTs = usePeakTs() ?? startTs;
+      const peak = usePeak();
+      if (minPeak == null || peak >= minPeak) {
         st.count = (st.count || 0) + 1;
         done = {
-          peak: st.peak ?? v, valley: st.valley ?? v,
+          peak, valley: useValley(),
           startTs, peakTs, endTs: now,
           durationMs: now - startTs,
           riseMs: peakTs - startTs,
@@ -83,20 +94,28 @@ function weighCycle(state, now, key, value, opts = {}) {
         };
       }
       st.phase = 'armed';                     // reset → รอรอบใหม่
-      st.peak = null; st.valley = null; st.startTs = null; st.peakTs = null;
+      st.peak = null; st.valley = null; st.peakTs = null;
+      st.peakAll = null; st.valleyAll = null; st.peakAllTs = null; st.startTs = null;
       return { weighing: false, peak: 0, valley: 0, done };
     }
-    if (st.peak == null || v > st.peak) { st.peak = v; st.peakTs = now; }
-    if (st.valley == null || v < st.valley) st.valley = v;
-    return { weighing: true, peak: st.peak, valley: st.valley, done: null };
+    // all-track (แบบเดิม · ไว้ fallback ถ้าทั้งรอบไม่มี gate=true)
+    if (st.peakAll == null || v > st.peakAll) { st.peakAll = v; st.peakAllTs = now; }
+    if (st.valleyAll == null || v < st.valleyAll) st.valleyAll = v;
+    if (gate) {                               // เก็บ peak/valley "ตัวจริง" เฉพาะช่วง gate=true
+      if (st.peak == null || v > st.peak) { st.peak = v; st.peakTs = now; }
+      if (st.valley == null || v < st.valley) st.valley = v;
+    }
+    return { weighing: true, peak: usePeak(), valley: useValley(), done: null };
   }
 
-  // armed — รอค่าขึ้นเหนือ startOffset
+  // armed — รอค่าขึ้นเหนือ startOffset (เริ่มตามน้ำหนักปกติ · gate ไม่บล็อกการเริ่มรอบ)
   if (v > startOffset) {
     st.phase = 'weighing';
-    st.startTs = now; st.peakTs = now;
-    st.peak = v; st.valley = v;
-    return { weighing: true, peak: v, valley: v, done: null };
+    st.startTs = now;
+    st.peakAll = v; st.valleyAll = v; st.peakAllTs = now;     // all เริ่มจับทันที
+    if (gate) { st.peak = v; st.valley = v; st.peakTs = now; }  // gated จับเฉพาะถ้า true
+    else { st.peak = null; st.valley = null; st.peakTs = null; }
+    return { weighing: true, peak: usePeak(), valley: useValley(), done: null };
   }
   return idle();
 }

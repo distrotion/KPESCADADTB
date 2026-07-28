@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS ${j} (job_key TEXT PRIMARY KEY, line TEXT, date_key T
 CREATE TABLE IF NOT EXISTS ${r} (line TEXT PRIMARY KEY, state TEXT, updated_at INTEGER);
 CREATE TABLE IF NOT EXISTS ${l} (line TEXT PRIMARY KEY, owner TEXT, label TEXT, heartbeat_ms INTEGER, updated_at INTEGER);
 CREATE TABLE IF NOT EXISTS ${this._t(line, 'series')} (job_key TEXT, station TEXT, ts INTEGER, data TEXT, PRIMARY KEY (job_key, station, ts));
+CREATE TABLE IF NOT EXISTS ${this._t(line, 'measure')} (measure_id INTEGER PRIMARY KEY AUTOINCREMENT, job_key TEXT, station TEXT, pass_no INTEGER,
+  key TEXT, value REAL, text_value TEXT, ts INTEGER, actor TEXT, actor_mode TEXT, ip TEXT, note TEXT, flags TEXT);
+CREATE INDEX IF NOT EXISTS ${this._t(line, 'measure')}_jk ON ${this._t(line, 'measure')}(job_key);
 CREATE INDEX IF NOT EXISTS ${j}_dt ON ${j}(date_key);
 CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);`;
   }
@@ -52,6 +55,34 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);`;
     p.push(Math.min(Number(limit) || 200, 1000));
     const rows = this.db.prepare(`SELECT station, ts, data FROM ${this._t(ln, 'series')} WHERE ${w.join(' AND ')} ORDER BY ts ASC LIMIT ?`).all(...p);
     return rows.map((r) => { let d = {}; try { d = JSON.parse(r.data || '{}'); } catch (_) {} return { station: r.station, ts: Number(r.ts), ...d }; });
+  }
+
+  // ── ค่าที่คนวัดเอง (measure) — append อย่างเดียว 1 แถว/ครั้งที่วัด (ไม่ทับ) ──
+  async appendMeasure({ line, jobKey, station, passNo, key, value, textValue, ts, actor, actorMode, ip, note, flags }) {
+    const ln = line || this._lineOf(jobKey);
+    const r = this.db.prepare(`INSERT INTO ${this._t(ln, 'measure')} (job_key, station, pass_no, key, value, text_value, ts, actor, actor_mode, ip, note, flags) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(jobKey, station != null ? String(station) : null, passNo != null ? Number(passNo) : null, String(key),
+           value != null ? Number(value) : null, textValue != null ? String(textValue) : null, Number(ts),
+           actor || null, actorMode || null, ip || null, note || null, JSON.stringify(flags || {}));
+    return { id: r.lastInsertRowid };
+  }
+
+  async listMeasures({ line = null, jobKey = null, key = null, limit = 500 } = {}) {
+    const ln = line || this._lineOf(jobKey);
+    const w = []; const p = [];
+    if (jobKey) { w.push('job_key = ?'); p.push(jobKey); }
+    if (key) { w.push('key = ?'); p.push(String(key)); }
+    p.push(Math.min(Number(limit) || 500, 5000));
+    const rows = this.db.prepare(`SELECT * FROM ${this._t(ln, 'measure')} ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY ts ASC LIMIT ?`).all(...p);
+    return rows.map((r) => { let fl = {}; try { fl = JSON.parse(r.flags || '{}'); } catch (_) {}
+      return { id: r.measure_id, jobKey: r.job_key, station: r.station, passNo: r.pass_no, key: r.key,
+        value: r.value != null ? Number(r.value) : null, textValue: r.text_value, ts: Number(r.ts),
+        actor: r.actor, actorMode: r.actor_mode, ip: r.ip, note: r.note, flags: fl }; });
+  }
+
+  async deleteMeasure(id, line) {
+    const r = this.db.prepare(`DELETE FROM ${this._t(line, 'measure')} WHERE measure_id = ?`).run(Number(id));
+    return r.changes > 0;
   }
 
   async ensureSchema(line) {

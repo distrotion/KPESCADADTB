@@ -177,6 +177,105 @@ class LineRecorderManager {
     return this.tracker.snapshotState(line);
   }
 
+  // ── ค่าที่คนวัดเอง (measure) — ยิง barcode → หา job + บ่อที่อยู่ตอนนี้ → คีย์ค่า (เก็บทุกครั้ง ไม่ทับ) ──
+
+  // หา job จาก barcode/carrier — กำลังวิ่งก่อน แล้วค่อยล่าสุด · คืน { job, station, passNo, jobs (ถ้ากำกวม) }
+  async resolveByBarcode(line, barcode, { keyField = null } = {}) {
+    const cfg = this.configs[line];
+    if (!cfg) throw new Error(`ไม่พบไลน์ "${line}"`);
+    const bc = String(barcode || '').trim();
+    if (!bc) throw new Error('ต้องระบุ barcode');
+    const store = this._storeFor(cfg);
+    const kf = keyField || ((cfg.fields || []).some((f) => f.key === 'barcode') ? 'barcode' : 'carrier');
+    let jobs = await store.listJobs({ line, field: kf, value: bc, limit: 20 });
+    // ไม่เจอแบบเป๊ะ → ลองอีกครั้งแบบ "ไม่สนเลข 0 นำหน้า" (สแกน 002110023393 ↔ เก็บ 2110023393 และกลับกัน)
+    if (!jobs || !jobs.length) {
+      const strip = (s) => String(s == null ? '' : s).trim().replace(/^0+/, '');
+      const target = strip(bc);
+      if (target && target !== bc) {
+        jobs = await store.listJobs({ line, field: kf, value: target, limit: 20 });   // เก็บแบบไม่มี 0 นำ
+      }
+      if ((!jobs || !jobs.length) && target) {
+        const cand = await store.listJobs({ line, q: target, limit: 50 });            // เก็บแบบมี 0 นำ → ค้นกว้างแล้วกรองเอง
+        jobs = (cand || []).filter((j) => {
+          const v = (j.data || j.header || {})[kf];
+          return strip(v) === target || strip(j.carrier) === target;
+        });
+      }
+    }
+    if (!jobs || !jobs.length) return { job: null, jobs: [], station: null, passNo: null };
+    const running = jobs.filter((j) => j.status === 'running');
+    const pick = (running.length ? running : jobs).sort((a, b) => (b.updatedAt || b.enterAt || 0) - (a.updatedAt || a.enterAt || 0))[0];
+    const where = await this._whereIsJob(line, pick);
+    return { job: pick, jobs, ...where, ambiguous: (running.length ? running.length : jobs.length) > 1 };
+  }
+
+  // งานอยู่บ่อไหนตอนนี้ (จาก register/occupancy) — ไม่อยู่ในไลน์ = null (คีย์ได้อยู่ ตาม acceptWhenNotInLine)
+  async _whereIsJob(line, job) {
+    if (!job) return { station: null, passNo: null };
+    const st = await this.stateFor(line);
+    const carrier = String(job.carrier != null ? job.carrier : '');
+    for (const pos of Object.keys(st.occ || {})) {
+      const o = st.occ[pos];
+      if (o && String(o.carrier) === carrier) {
+        const cfgPos = (((this.configs[line] || {}).source || {}).positions || []).find((p) => String(p.pos) === String(pos));
+        return { station: cfgPos ? String(cfgPos.station) : String(pos), passNo: null, inLine: true };
+      }
+    }
+    for (const stn of Object.keys((st.oven || {}))) {          // อยู่ในเตาอบ
+      const c = ((st.oven[stn] || {}).c) || {};
+      if (c[carrier] != null) return { station: String(stn), passNo: null, inLine: true };
+    }
+    return { station: null, passNo: null, inLine: false };
+  }
+
+  // field ที่ต้องวัดในบ่อนี้ (scope=measure · stations ว่าง = ทุกบ่อ)
+  measureFields(line, station = null) {
+    const cfg = this.configs[line] || {};
+    return (cfg.fields || []).filter((f) => f.scope === 'measure'
+      && (!f.stations || !f.stations.length || station == null || f.stations.includes(String(station))));
+  }
+
+  // บันทึก 1 ครั้งที่วัด — append เสมอ (ไม่ทับ) · station ว่าง = ใช้บ่อปัจจุบัน
+  async addMeasure(line, { barcode = null, jobKey = null, key, value = null, textValue = null,
+                          station = null, passNo = null, actor = null, ip = null, note = null } = {}) {
+    const cfg = this.configs[line];
+    if (!cfg) throw new Error(`ไม่พบไลน์ "${line}"`);
+    if (!key) throw new Error('ต้องระบุ key (ค่าที่วัด)');
+    let job = null; let where = { station: null, inLine: false };
+    if (jobKey) { job = await this._storeFor(cfg).getJob(jobKey); where = await this._whereIsJob(line, job); }
+    else { const r = await this.resolveByBarcode(line, barcode); job = r.job; where = { station: r.station, inLine: r.inLine }; }
+    if (!job) throw new Error(`ไม่พบงานของ barcode "${barcode || jobKey}"`);
+    const mc = cfg.measure || {};
+    if (!where.inLine && mc.acceptWhenNotInLine === false) throw new Error('งานไม่ได้อยู่ในไลน์ตอนนี้ (ปิดรับค่าไว้)');
+    const stn = station != null && String(station) !== '' ? String(station) : where.station;
+    const row = {
+      line, jobKey: job.jobKey, station: stn, passNo, key: String(key),
+      value: value != null && value !== '' && Number.isFinite(Number(value)) ? Number(value) : null,
+      textValue: (value == null || value === '' || !Number.isFinite(Number(value))) ? (textValue != null ? String(textValue) : (value != null ? String(value) : null)) : null,
+      ts: Date.now(), actor: actor || null, actorMode: mc.actorMode || 'list', ip: ip || null, note: note || null,
+      flags: { ...(where.inLine ? {} : { offline: true }), ...(station != null && String(station) !== '' && !where.inLine ? { manualStation: true } : {}) },
+    };
+    const saved = await this._storeFor(cfg).appendMeasure(row);
+    return { ok: true, id: saved && saved.id, jobKey: job.jobKey, station: stn, inLine: !!where.inLine, ts: row.ts };
+  }
+
+  async measures(line, { jobKey = null, key = null, limit = 500 } = {}) {
+    const cfg = this.configs[line];
+    if (!cfg) throw new Error(`ไม่พบไลน์ "${line}"`);
+    const st = this._storeFor(cfg);
+    if (typeof st.listMeasures !== 'function') return [];
+    return st.listMeasures({ line, jobKey, key, limit });
+  }
+
+  async deleteMeasure(line, id) {
+    const cfg = this.configs[line];
+    if (!cfg) throw new Error(`ไม่พบไลน์ "${line}"`);
+    const st = this._storeFor(cfg);
+    if (typeof st.deleteMeasure !== 'function') return false;
+    return st.deleteMeasure(id, line);
+  }
+
   // สถานะ lock ต่อไลน์ (ให้ UI โชว์ badge + เตือน)
   async lockStatus(line) {
     const store = this._storeFor(this.configs[line]);
@@ -416,26 +515,37 @@ class LineRecorderManager {
   async exportHistory({ line = null, from = null, to = null, status = null, q = null, limit = 5000 } = {}) {
     const cfg = (line && this.configs[line]) || { fields: [], stations: {} };
     const jobFields  = (cfg.fields || []).filter((f) => f.scope === 'job').map((f) => f.key);
-    const stepFields = (cfg.fields || []).filter((f) => f.scope !== 'job').map((f) => f.key);
+    const stepFields = (cfg.fields || []).filter((f) => f.scope !== 'job' && f.scope !== 'measure').map((f) => f.key);
+    const measFields = (cfg.fields || []).filter((f) => f.scope === 'measure').map((f) => f.key);   // ค่าที่คนวัดเอง → คอลัมน์ <key>_meas (ค่าล่าสุดของบ่อนั้น)
     // field ที่เปิด track → เพิ่มคอลัมน์ <key>_min / <key>_max
-    const statKeys = (cfg.fields || []).filter((f) => f.scope !== 'job' && f.track && (f.track.minMax || f.track.summary === 'avg')).map((f) => f.key);
+    const statKeys = (cfg.fields || []).filter((f) => f.scope !== 'job' && f.scope !== 'measure' && f.track && (f.track.minMax || f.track.summary === 'avg')).map((f) => f.key);
     const statCols = statKeys.flatMap((k) => [`${k}_min`, `${k}_max`]);
     const jobs = await this.jobs({ line, from, to, status, q, limit });
     const tz = (v) => (v == null ? '' : new Date(Number(v)).toLocaleString('sv-SE', { timeZone: 'Asia/Bangkok' }));
     const esc = (v) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    const cols = ['job_key', 'carrier', 'date_key', 'status', ...jobFields, 'pass_no', 'station', 'station_name', 'enter', 'exit', 'dwell_s', 'dwell_sp', 'dwell_in_spec', 'in_spec', ...stepFields, ...statCols];
+    const cols = ['job_key', 'carrier', 'date_key', 'status', ...jobFields, 'pass_no', 'station', 'station_name', 'enter', 'exit', 'dwell_s', 'dwell_sp', 'dwell_in_spec', 'in_spec', ...stepFields, ...statCols, ...measFields.map((k) => k + '_meas')];
     const statVals = (p) => statKeys.flatMap((k) => { const s = (p.stats || {})[k]; return [s && s.min != null ? s.min : '', s && s.max != null ? s.max : '']; });
+    // ค่าที่วัด (append log) — ดึงทีเดียวทั้งไลน์ แล้ว group ตาม job+บ่อ (ค่าล่าสุดชนะ)
+    const measBy = {};
+    if (measFields.length && line) {
+      try {
+        for (const m of (await this.measures(line, { limit: 5000 }))) {
+          measBy[m.jobKey + '|' + (m.station || '') + '|' + m.key] = m.value != null ? m.value : m.textValue;
+        }
+      } catch (_) { /* ไม่มีตาราง measure (ไลน์เก่า) → คอลัมน์ว่าง */ }
+    }
+    const measVals = (jk, station) => measFields.map((k) => { const v = measBy[jk + '|' + (station || '') + '|' + k]; return v != null ? v : ''; });
     const rows = [cols.join(',')];
     for (const j of (jobs || [])) {
       const jk = j.jobKey || j.job_key;
       const header = j.data || j.header || {};
       const base = [jk, j.carrier, j.dateKey || j.date_key, j.status, ...jobFields.map((k) => header[k])];
       const path = await this.jobPath(jk);
-      if (!path.length) { rows.push([...base, '', '', '', '', '', '', '', '', ...stepFields.map(() => ''), ...statCols.map(() => '')].map(esc).join(',')); continue; }
+      if (!path.length) { rows.push([...base, '', '', '', '', '', '', '', '', ...stepFields.map(() => ''), ...statCols.map(() => ''), ...measFields.map(() => '')].map(esc).join(',')); continue; }
       for (const p of path) {
         rows.push([...base, p.passNo, p.station, p.stationName, tz(p.enterTs), tz(p.exitTs), p.dwell,
           p.dwellSp != null ? p.dwellSp : '', p.dwellInSpec == null ? '' : (p.dwellInSpec ? 1 : 0), p.inSpec ? 1 : 0,
-          ...stepFields.map((k) => (p.params[k] != null ? p.params[k] : '')), ...statVals(p)].map(esc).join(','));
+          ...stepFields.map((k) => (p.params[k] != null ? p.params[k] : '')), ...statVals(p), ...measVals(jk, p.station)].map(esc).join(','));
       }
     }
     return rows.join('\n');
