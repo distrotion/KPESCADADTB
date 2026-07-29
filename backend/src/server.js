@@ -238,7 +238,7 @@ const stockManager = new StockManager(engine, {
 // Line Recorder (universal process recorder · §LR) — โมดูลบันทึกการผลิตต่อ job/ไลน์ชุบ · MVP: file store · ingest ผ่าน API (ยังไม่ผูก PLC)
 const { LineRecorderManager } = require('./lineRecorder/manager');
 const { mountLineRecorder } = require('./lineRecorder/routes');
-const lineRecorder = new LineRecorderManager({ tagEngine: engine, dbManager, licenseMaxLines: () => license.maxLines() });   // DLClr line-limit (disk license · USB ไม่เกี่ยว)
+const lineRecorder = new LineRecorderManager({ tagEngine: engine, dbManager, queryBufferManager, licenseMaxLines: () => license.maxLines() });   // DLClr line-limit (disk license · USB ไม่เกี่ยว) · qbm = auto-สร้าง buffer กราฟ measure
 lineRecorder._onViolation = (line, ev, viol) => { try { broadcast({ type: 'line_spec_violation', line, station: ev.station, carrier: ev.carrier, viol, t: Date.now() }); } catch (_) {} };
 engine.setLineRecorder(lineRecorder);   // device type 'lr' อ่าน job field ผ่าน LR manager
 mountLineRecorder(app, lineRecorder);

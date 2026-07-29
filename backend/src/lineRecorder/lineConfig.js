@@ -60,6 +60,11 @@ function normalizeLineConfig(raw, file) {
         actorMode: ['login', 'device'].includes(m.actorMode) ? m.actorMode : 'list',   // ใครคีย์: list(เลือกชื่อ)/login/device
         actors: _arr(m.actors).map((x) => String(x).trim()).filter(Boolean),           // รายชื่อพนักงาน (actorMode=list)
         acceptWhenNotInLine: m.acceptWhenNotInLine !== false,                          // งานไม่ได้อยู่ในบ่อ → ยังบันทึกได้ (default: ได้)
+        // กราฟค่าที่วัด (auto Query Buffer) — X = ฟิวของงาน · N งานล่าสุด
+        graphX: String(m.graphX || '').trim(),                                          // ว่าง = barcode ถ้ามี ไม่งั้น carrier
+        graphJobs: Math.max(1, Math.min(Number(m.graphJobs) || 200, 5000)),             // จำนวนงานล่าสุดในกราฟ
+        // หลายค่าที่จุดเดียวกัน (วัดซ้ำ / order เดียวกันหลายชิ้น) ใช้ค่าไหน
+        graphAgg: ['avg', 'max', 'min'].includes(m.graphAgg) ? m.graphAgg : 'last',
       };
     })(),
     _file: file || '',

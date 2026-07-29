@@ -6,6 +6,7 @@ const fs = require('fs');
 const { loadLineConfigs, saveLineConfig, deleteLineConfig } = require('./lineConfig');
 const { decode } = require('./decoder');
 const { LineEngine, checkSpec } = require('./engine');
+const measureGraph = require('./measureGraph');   // auto Query Buffer สำหรับกราฟค่าที่คนวัดเอง
 
 // ค่าอยู่ในเกณฑ์ที่เก็บไว้ (specMap = {key:{min,max}} ที่ resolve แล้ว) — true ถ้าไม่หลุดตัวไหนเลย
 function _withinSpec(params, specMap) {
@@ -22,12 +23,13 @@ const { CarrierTracker } = require('./source/carrierTracker');
 const { SnapshotSource } = require('./source/snapshotSource');
 
 class LineRecorderManager {
-  constructor({ seedDir, runtimeDir, store, tagEngine, plcIntervalMs, dbManager, licenseMaxLines } = {}) {
+  constructor({ seedDir, runtimeDir, store, tagEngine, plcIntervalMs, dbManager, licenseMaxLines, queryBufferManager } = {}) {
     this._licenseMaxLines = typeof licenseMaxLines === 'function' ? licenseMaxLines : null;   // () => จำนวนไลน์สูงสุดจาก license (DLClr) · null = ไม่จำกัด
     this.seedDir = seedDir || path.join(__dirname, '..', 'config', 'lines');                       // ตัวอย่าง (committed) · backend/src/config/lines
     this.runtimeDir = runtimeDir || path.join(__dirname, '..', '..', '..', 'config', 'lines');     // user สร้าง/ตั้งชื่อเอง (per-machine · /config/lines · gitignored)
     this.configs = {};
     this.dbManager = dbManager || null;          // resolve DB connection ตามชื่อ (Setup → Databases)
+    this.queryBufferManager = queryBufferManager || null;   // auto-สร้าง buffer ของกราฟ measure
     this._stores = {};                           // pool: 'db:<name>' | '__file__' → LineStore (per-line เลือก DB ได้)
     if (store) this._stores.__file__ = store;    // inject (test)
     this.tagEngine = tagEngine || null;   // อ่านค่า tag (spec แบบ tag/offset · resolve ตอน STEP)
@@ -389,9 +391,72 @@ class LineRecorderManager {
     const cfg = saveLineConfig(this.runtimeDir, raw); this.reload();
     const c = this.configs[cfg.line];
     this.ensureSchema(cfg.line).catch((e) => console.error('[lineRecorder] auto ensureSchema:', e.message));   // สร้างตาราง + view ให้อัตโนมัติ
+    this.syncMeasureGraphs(cfg.line);   // มี measure field → สร้าง/อัปเดต Query Buffer ของกราฟให้อัตโนมัติ
     return c;
   }
+
+  // ── กราฟค่าที่คนวัดเอง (measure) — auto Query Buffer ต่อ field · แกน X = ฟิวของงาน · แยกคอลัมน์ตามบ่อ ──
+  //   idempotent: เรียกซ้ำ = update ตัวเดิม (ยึดชื่อ deterministic) ไม่สร้างซ้ำ
+  syncMeasureGraphs(line) {
+    const cfg = this.configs[line];
+    if (!cfg || !this.queryBufferManager) return [];
+    let dialect = 'pg';
+    try {
+      const conn = this.dbManager && this.dbManager.resolve ? this.dbManager.resolve((cfg.source || {}).storeDb) : null;
+      if (conn && conn.type) dialect = conn.type === 'mariadb' ? 'mysql' : conn.type;
+    } catch (_) { /* ไม่รู้ dialect → pg (ค่าเริ่มต้น) */ }
+    try { return measureGraph.syncBuffers(cfg, this.queryBufferManager, { dialect }); }
+    catch (e) { console.error('[lineRecorder] measure graph:', e.message); return []; }
+  }
+
+  // ข้อมูลกราฟที่ UI ต้องใช้ตั้ง chart (bufferId + แกน X + คอลัมน์ Y ต่อบ่อ) · ไม่สร้างใหม่
+  measureGraphs(line) {
+    const cfg = this.configs[line];
+    if (!cfg || !this.queryBufferManager) return [];
+    const bufs = this.queryBufferManager.list();
+    return (cfg.fields || []).filter((f) => f.scope === 'measure').map((f) => {
+      const b = bufs.find((x) => x.name === measureGraph.bufferName(line, f.key));
+      return {
+        key: f.key, label: f.label || f.key, unit: f.unit || '',
+        bufferId: b ? b.id : null,
+        xCol: measureGraph.xColumnOf(cfg),
+        yCols: measureGraph.stationsOf(cfg, f).map((s) => `${f.key}_${s}`),
+        stations: measureGraph.stationsOf(cfg, f),
+        // กติกาเมื่อมีหลายค่าที่จุดเดียวกัน — ให้ UI บอกผู้ใช้ได้ว่ากราฟนี้อ่านยังไง
+        agg: measureGraph.aggOf(cfg), aggLabel: measureGraph.AGG_LABEL[measureGraph.aggOf(cfg)],
+        merge: measureGraph.mergeSameX(cfg),
+      };
+    });
+  }
   deleteLine(line) { const ok = deleteLineConfig(this.runtimeDir, line); this.reload(); return ok; }
+
+  // แกน X ของกราฟค่าที่วัด — เปลี่ยนได้จากหน้ากราฟเลย (patch config + สร้าง SQL ของ buffer ใหม่)
+  //   buffer มีตัวเดียวต่อ field → เปลี่ยนที่นี่ = เปลี่ยนให้ทุกคนที่ดูกราฟนี้ (ตั้งใจ: จุดตั้งค่าเดียว ไม่แตกเป็น state ซ้อน)
+  setMeasureGraphX(line, x) {
+    const cfg = this.configs[line];
+    if (!cfg) throw new Error(`ไม่พบไลน์ "${line}"`);
+    const want = String(x == null ? '' : x).trim();
+    const jobKeys = (cfg.fields || []).filter((f) => f.scope === 'job').map((f) => f.key);
+    if (want !== '' && want !== 'carrier' && !jobKeys.includes(want)) {
+      throw new Error(`"${want}" ไม่ใช่ข้อมูลของงาน (เลือกได้: carrier, ${jobKeys.join(', ')})`);
+    }
+    const file = path.join(this.runtimeDir, String(line).replace(/[^A-Za-z0-9_\-]/g, '_') + '.json');
+    let raw;
+    try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); }
+    catch (_) { raw = JSON.parse(JSON.stringify({ ...cfg, _file: undefined })); }   // seed-only → สร้าง override ใน runtime
+    raw.measure = { ...(raw.measure || {}), graphX: want };
+    saveLineConfig(this.runtimeDir, raw);
+    this.reload();
+    this.syncMeasureGraphs(line);
+    return this.measureGraphs(line);
+  }
+
+  // ฟิวที่ใช้เป็นแกน X ได้ (ให้ dropdown หน้ากราฟ) — เลขงาน + ข้อมูลของงานทุกตัว
+  measureGraphXOptions(line) {
+    const cfg = this.configs[line];
+    if (!cfg) return [];
+    return ['carrier', ...(cfg.fields || []).filter((f) => f.scope === 'job').map((f) => f.key)];
+  }
 
   // comment ต่อแถว (set) — แก้จากหน้า monitor · patch setNotes ในไฟล์ config + reload (ไม่แตะตาราง)
   setSetNote(line, set, note) {

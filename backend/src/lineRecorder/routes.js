@@ -44,6 +44,23 @@ function mountLineRecorder(app, manager) {
   app.post('/api/line-recorder/lines/:line/comment', async (req, res) => {
     try { res.json(await manager.setComment(req.params.line, req.body || {})); } catch (e) { se(res, e); }
   });
+  // กราฟค่าที่วัด — buffer + แกน X/Y ที่ตั้งไว้ (?sync=1 = สร้าง/อัปเดต buffer ก่อน)
+  app.get('/api/line-recorder/lines/:line/measure-graphs', (req, res) => {
+    try {
+      if (req.query.sync === '1') manager.syncMeasureGraphs(req.params.line);
+      res.json({ ok: true, graphs: manager.measureGraphs(req.params.line),
+        xOptions: manager.measureGraphXOptions(req.params.line) });
+    } catch (e) { se(res, e); }
+  });
+
+  // เปลี่ยนแกน X ของกราฟค่าที่วัด (จากหน้ากราฟ) — body { x } · '' = อัตโนมัติ
+  app.post('/api/line-recorder/lines/:line/measure-graph-x', (req, res) => {
+    try {
+      const graphs = manager.setMeasureGraphX(req.params.line, (req.body || {}).x);
+      res.json({ ok: true, graphs, xOptions: manager.measureGraphXOptions(req.params.line) });
+    } catch (e) { se(res, e); }
+  });
+
   // ── measure (ค่าที่คนวัดเอง · คีย์ผ่านมือถือ) ────────────────────────────────
   // ยิง barcode → งาน + บ่อที่อยู่ตอนนี้ + field ที่ต้องวัดในบ่อนั้น (ให้ UI มือถือโชว์)
   app.get('/api/line-recorder/lines/:line/scan', async (req, res) => {
