@@ -231,16 +231,15 @@ class LineRecorderManager {
     return { station: null, passNo: null, inLine: false };
   }
 
-  // field ที่ต้องวัดในบ่อนี้ (scope=measure · stations ว่าง = ทุกบ่อ)
-  measureFields(line, station = null) {
+  // field ที่ต้องวัด (scope=measure) — ค่าผูกกับ "งาน" ไม่ผูกบ่อ → คืนทุกตัวของไลน์
+  measureFields(line) {
     const cfg = this.configs[line] || {};
-    return (cfg.fields || []).filter((f) => f.scope === 'measure'
-      && (!f.stations || !f.stations.length || station == null || f.stations.includes(String(station))));
+    return (cfg.fields || []).filter((f) => f.scope === 'measure');
   }
 
-  // บันทึก 1 ครั้งที่วัด — append เสมอ (ไม่ทับ) · station ว่าง = ใช้บ่อปัจจุบัน
+  // บันทึก 1 ครั้งที่วัด — append เสมอ (ไม่ทับ) · ค่าเป็นของงาน (ไม่ผูกบ่อ) → station = null เสมอ
   async addMeasure(line, { barcode = null, jobKey = null, key, value = null, textValue = null,
-                          station = null, passNo = null, actor = null, ip = null, note = null } = {}) {
+                          passNo = null, actor = null, ip = null, note = null } = {}) {
     const cfg = this.configs[line];
     if (!cfg) throw new Error(`ไม่พบไลน์ "${line}"`);
     if (!key) throw new Error('ต้องระบุ key (ค่าที่วัด)');
@@ -250,16 +249,15 @@ class LineRecorderManager {
     if (!job) throw new Error(`ไม่พบงานของ barcode "${barcode || jobKey}"`);
     const mc = cfg.measure || {};
     if (!where.inLine && mc.acceptWhenNotInLine === false) throw new Error('งานไม่ได้อยู่ในไลน์ตอนนี้ (ปิดรับค่าไว้)');
-    const stn = station != null && String(station) !== '' ? String(station) : where.station;
     const row = {
-      line, jobKey: job.jobKey, station: stn, passNo, key: String(key),
+      line, jobKey: job.jobKey, station: null, passNo, key: String(key),
       value: value != null && value !== '' && Number.isFinite(Number(value)) ? Number(value) : null,
       textValue: (value == null || value === '' || !Number.isFinite(Number(value))) ? (textValue != null ? String(textValue) : (value != null ? String(value) : null)) : null,
       ts: Date.now(), actor: actor || null, actorMode: mc.actorMode || 'list', ip: ip || null, note: note || null,
-      flags: { ...(where.inLine ? {} : { offline: true }), ...(station != null && String(station) !== '' && !where.inLine ? { manualStation: true } : {}) },
+      flags: { ...(where.inLine ? {} : { offline: true }) },
     };
     const saved = await this._storeFor(cfg).appendMeasure(row);
-    return { ok: true, id: saved && saved.id, jobKey: job.jobKey, station: stn, inLine: !!where.inLine, ts: row.ts };
+    return { ok: true, id: saved && saved.id, jobKey: job.jobKey, station: null, inLine: !!where.inLine, ts: row.ts };
   }
 
   async measures(line, { jobKey = null, key = null, limit = 500 } = {}) {
@@ -395,7 +393,7 @@ class LineRecorderManager {
     return c;
   }
 
-  // ── กราฟค่าที่คนวัดเอง (measure) — auto Query Buffer ต่อ field · แกน X = ฟิวของงาน · แยกคอลัมน์ตามบ่อ ──
+  // ── กราฟค่าที่คนวัดเอง (measure) — auto Query Buffer ต่อ field · แกน X = ฟิวของงาน · 1 เส้นต่อ field ──
   //   idempotent: เรียกซ้ำ = update ตัวเดิม (ยึดชื่อ deterministic) ไม่สร้างซ้ำ
   syncMeasureGraphs(line) {
     const cfg = this.configs[line];
@@ -409,7 +407,7 @@ class LineRecorderManager {
     catch (e) { console.error('[lineRecorder] measure graph:', e.message); return []; }
   }
 
-  // ข้อมูลกราฟที่ UI ต้องใช้ตั้ง chart (bufferId + แกน X + คอลัมน์ Y ต่อบ่อ) · ไม่สร้างใหม่
+  // ข้อมูลกราฟที่ UI ต้องใช้ตั้ง chart (bufferId + แกน X + คอลัมน์ Y ของ field) · ไม่สร้างใหม่
   measureGraphs(line) {
     const cfg = this.configs[line];
     if (!cfg || !this.queryBufferManager) return [];
@@ -420,8 +418,7 @@ class LineRecorderManager {
         key: f.key, label: f.label || f.key, unit: f.unit || '',
         bufferId: b ? b.id : null,
         xCol: measureGraph.xColumnOf(cfg),
-        yCols: measureGraph.stationsOf(cfg, f).map((s) => `${f.key}_${s}`),
-        stations: measureGraph.stationsOf(cfg, f),
+        yCols: [measureGraph.valueColName(cfg, f)],   // 1 เส้นต่อ field — ไม่แยกตามบ่อแล้ว
         // กติกาเมื่อมีหลายค่าที่จุดเดียวกัน — ให้ UI บอกผู้ใช้ได้ว่ากราฟนี้อ่านยังไง
         agg: measureGraph.aggOf(cfg), aggLabel: measureGraph.AGG_LABEL[measureGraph.aggOf(cfg)],
         merge: measureGraph.mergeSameX(cfg),
@@ -472,6 +469,19 @@ class LineRecorderManager {
     saveLineConfig(this.runtimeDir, raw);
     this.reload();
     return raw.setNotes;
+  }
+
+  // หมายเหตุต่อบ่อ (คนพิมพ์เองในใบรายงาน · ใครพิมพ์ก็ได้ ไม่ต้องเลือกชื่อ) → job.steps[<บ่อ>].note
+  //   "ต่อบ่อ" ไม่ใช่ต่อรอบ — งานที่ย้อนบ่อเดิม รอบหลังจะทับรอบแรก (steps เก็บบ่อละ 1 ค่า)
+  async setStepNote(line, { jobKey = null, station = null, note = '' } = {}) {
+    const cfg = this.configs[line];
+    if (!cfg) throw new Error(`ไม่พบไลน์ "${line}"`);
+    if (!jobKey) throw new Error('ต้องระบุ jobKey');
+    if (station == null || String(station) === '') throw new Error('ต้องระบุบ่อ (station)');
+    const store = this._storeFor(cfg);
+    if (typeof store.setStepNote !== 'function') throw new Error('store นี้ยังไม่รองรับหมายเหตุต่อบ่อ');
+    const ok = await store.setStepNote(jobKey, String(station), note);
+    return { ok, updated: ok };
   }
 
   // comment field (manual job-field · user พิมพ์เองรายแถว) → header ของ job · entrance ที่ยัง pending → register ctx.data
@@ -537,7 +547,7 @@ class LineRecorderManager {
           stationName: sc.name || '', type: sc.type || '', seq: sc.seq != null ? Number(sc.seq) : null,
           enterTs: d.enterTs != null ? d.enterTs : null, exitTs: d.exitTs != null ? d.exitTs : null,
           dwell: d.dwell != null ? d.dwell : null,
-          inSpec: (d.spec ? _withinSpec(params, d.spec) : (checkSpec(cfg.fields, e.station, params).length === 0)) && d.dwellInSpec !== false,   // เกณฑ์ที่เก็บ (tag/offset) + เวลาชุบหลุด SP±% = ✗
+          inSpec: (d.spec ? _withinSpec(params, d.spec) : (checkSpec(cfg.fields, e.station, params, (stations[String(e.station)] || {}).spec).length === 0)) && d.dwellInSpec !== false,   // เกณฑ์ที่เก็บ (tag/offset) + เวลาชุบหลุด SP±% = ✗
           params, stats: d.stats || null,   // min/max/avg ต่อ param (เมื่อเปิด track)
           spec: d.spec || null,   // เกณฑ์ที่ใช้จริง (resolve แล้ว) → แสดง min–max
           dwellSp: d.dwellSp != null ? d.dwellSp : null, dwellTol: d.dwellTol != null ? d.dwellTol : null,
@@ -558,7 +568,7 @@ class LineRecorderManager {
         stationName: sc.name || s.name || '', type: sc.type || s.type || '', seq: s.seq != null ? Number(s.seq) : null,
         enterTs: s.enterTs != null ? s.enterTs : null, exitTs: s.exitTs != null ? s.exitTs : null,
         dwell: s.dwell != null ? s.dwell : null,
-        inSpec: s.inSpec != null ? s.inSpec : (s.spec ? _withinSpec(params, s.spec) : (checkSpec(cfg.fields, s.station, params).length === 0)),
+        inSpec: s.inSpec != null ? s.inSpec : (s.spec ? _withinSpec(params, s.spec) : (checkSpec(cfg.fields, s.station, params, (stations[String(s.station)] || {}).spec).length === 0)),
         params, stats: s.stats || null, spec: s.spec || null,
         dwellSp: s.dwellSp != null ? s.dwellSp : null, dwellTol: s.dwellTol != null ? s.dwellTol : null,
         dwellInSpec: s.dwellInSpec != null ? s.dwellInSpec : null,
@@ -581,36 +591,42 @@ class LineRecorderManager {
     const cfg = (line && this.configs[line]) || { fields: [], stations: {} };
     const jobFields  = (cfg.fields || []).filter((f) => f.scope === 'job').map((f) => f.key);
     const stepFields = (cfg.fields || []).filter((f) => f.scope !== 'job' && f.scope !== 'measure').map((f) => f.key);
-    const measFields = (cfg.fields || []).filter((f) => f.scope === 'measure').map((f) => f.key);   // ค่าที่คนวัดเอง → คอลัมน์ <key>_meas (ค่าล่าสุดของบ่อนั้น)
+    const measFields = (cfg.fields || []).filter((f) => f.scope === 'measure').map((f) => f.key);   // ค่าที่คนวัดเอง → คอลัมน์ <key>_meas (ค่าล่าสุดของงาน)
     // field ที่เปิด track → เพิ่มคอลัมน์ <key>_min / <key>_max
     const statKeys = (cfg.fields || []).filter((f) => f.scope !== 'job' && f.scope !== 'measure' && f.track && (f.track.minMax || f.track.summary === 'avg')).map((f) => f.key);
     const statCols = statKeys.flatMap((k) => [`${k}_min`, `${k}_max`]);
     const jobs = await this.jobs({ line, from, to, status, q, limit });
     const tz = (v) => (v == null ? '' : new Date(Number(v)).toLocaleString('sv-SE', { timeZone: 'Asia/Bangkok' }));
     const esc = (v) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    const cols = ['job_key', 'carrier', 'date_key', 'status', ...jobFields, 'pass_no', 'station', 'station_name', 'enter', 'exit', 'dwell_s', 'dwell_sp', 'dwell_in_spec', 'in_spec', ...stepFields, ...statCols, ...measFields.map((k) => k + '_meas')];
+    const cols = ['job_key', 'carrier', 'date_key', 'status', ...jobFields, 'pass_no', 'station', 'station_name', 'enter', 'exit', 'dwell_s', 'dwell_sp', 'dwell_in_spec', 'in_spec', ...stepFields, ...statCols, ...measFields.map((k) => k + '_meas'), 'note'];
+    // หมายเหตุต่อบ่อ — อยู่ใน job.steps (listJobs คืนมาให้แล้ว) ไม่ใช่ใน STEP event → map ตามเลขบ่อ
+    const noteOf = (j, station) => {
+      const s = (j.steps || []).find((x) => String(x.station) === String(station));
+      return (s && s.note) || '';
+    };
     const statVals = (p) => statKeys.flatMap((k) => { const s = (p.stats || {})[k]; return [s && s.min != null ? s.min : '', s && s.max != null ? s.max : '']; });
-    // ค่าที่วัด (append log) — ดึงทีเดียวทั้งไลน์ แล้ว group ตาม job+บ่อ (ค่าล่าสุดชนะ)
+    // ค่าที่วัด (append log) — ดึงทีเดียวทั้งไลน์ แล้ว group ตามงาน (ค่าล่าสุดชนะ · ข้อมูลเก่าที่ผูกบ่อไว้ก็รวมมาที่งานเดียวกัน)
     const measBy = {};
     if (measFields.length && line) {
       try {
         for (const m of (await this.measures(line, { limit: 5000 }))) {
-          measBy[m.jobKey + '|' + (m.station || '') + '|' + m.key] = m.value != null ? m.value : m.textValue;
+          measBy[m.jobKey + '|' + m.key] = m.value != null ? m.value : m.textValue;   // เรียงมาตาม ts ASC → ตัวท้ายคือค่าล่าสุด
         }
       } catch (_) { /* ไม่มีตาราง measure (ไลน์เก่า) → คอลัมน์ว่าง */ }
     }
-    const measVals = (jk, station) => measFields.map((k) => { const v = measBy[jk + '|' + (station || '') + '|' + k]; return v != null ? v : ''; });
+    const measVals = (jk) => measFields.map((k) => { const v = measBy[jk + '|' + k]; return v != null ? v : ''; });
     const rows = [cols.join(',')];
     for (const j of (jobs || [])) {
       const jk = j.jobKey || j.job_key;
       const header = j.data || j.header || {};
       const base = [jk, j.carrier, j.dateKey || j.date_key, j.status, ...jobFields.map((k) => header[k])];
       const path = await this.jobPath(jk);
-      if (!path.length) { rows.push([...base, '', '', '', '', '', '', '', '', ...stepFields.map(() => ''), ...statCols.map(() => ''), ...measFields.map(() => '')].map(esc).join(',')); continue; }
+      if (!path.length) { rows.push([...base, '', '', '', '', '', '', '', '', ...stepFields.map(() => ''), ...statCols.map(() => ''), ...measFields.map(() => ''), ''].map(esc).join(',')); continue; }
       for (const p of path) {
         rows.push([...base, p.passNo, p.station, p.stationName, tz(p.enterTs), tz(p.exitTs), p.dwell,
           p.dwellSp != null ? p.dwellSp : '', p.dwellInSpec == null ? '' : (p.dwellInSpec ? 1 : 0), p.inSpec ? 1 : 0,
-          ...stepFields.map((k) => (p.params[k] != null ? p.params[k] : '')), ...statVals(p), ...measVals(jk, p.station)].map(esc).join(','));
+          ...stepFields.map((k) => (p.params[k] != null ? p.params[k] : '')), ...statVals(p), ...measVals(jk),
+          noteOf(j, p.station)].map(esc).join(','));
       }
     }
     return rows.join('\n');

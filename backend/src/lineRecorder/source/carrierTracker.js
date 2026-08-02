@@ -30,7 +30,9 @@ function _accStats(acc, params) {
   for (const k in (params || {})) {
     const v = Number(params[k]);
     if (!Number.isFinite(v) || v === 0) continue;
-    const a = acc[k] || (acc[k] = { min: v, max: v, sum: 0, count: 0 });
+    // first = ค่าแรกที่อ่านได้หลังลงบ่อ (acc ถูกรีเซ็ตต่อการเข้าบ่อ → ย้อนบ่อ = นับใหม่ต่อรอบ)
+    //   ตาม latch เดิม: 0/null/อ่านไม่ได้ ไม่นับ → "ครั้งแรก" = sample แรกที่มีค่าจริง
+    const a = acc[k] || (acc[k] = { min: v, max: v, sum: 0, count: 0, first: v });
     if (v < a.min) a.min = v;
     if (v > a.max) a.max = v;
     a.sum += v; a.count += 1;
@@ -116,14 +118,17 @@ function _summarize(cfg, params, stats, graph, enterTs, exitTs) {
     const tr = f.track || {};
     const wantAvg = tr.summary === 'avg';
     const wantMid = tr.summary === 'mid';
-    if (!tr.minMax && !wantAvg && !wantMid) continue;
+    const wantFirst = tr.summary === 'first';
+    if (!tr.minMax && !wantAvg && !wantMid && !wantFirst) continue;
     const s = stats && stats[f.key];
     if (!s || !s.count) continue;
     const avg = Math.round((s.sum / s.count) * 1e6) / 1e6;
     const mid = _midOf(graph, f.key, midTs != null ? midTs : (graph ? graph.t0 : null));
     if (wantAvg) values[f.key] = avg;                          // ค่าที่แสดง/สเปก = ค่าเฉลี่ย (แทนค่าสุดท้าย)
     else if (wantMid && mid != null) values[f.key] = mid;      // = ค่ากลางเวลา · ไม่มี sample → คงค่าสุดท้าย (ไม่ทิ้งข้อมูล)
+    else if (wantFirst && s.first != null) values[f.key] = s.first;   // = ค่าตอนลงบ่อครั้งแรก
     out[f.key] = { min: s.min, max: s.max, avg, last: params[f.key] != null ? Number(params[f.key]) : null };
+    if (s.first != null) out[f.key].first = s.first;
     if (mid != null) out[f.key].mid = mid;
   }
   return { values, stats: out };

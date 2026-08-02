@@ -6,6 +6,26 @@ const path = require('path');
 function _arr(v) { return Array.isArray(v) ? v : []; }
 function _obj(v) { return (v && typeof v === 'object') ? v : {}; }
 
+// เกณฑ์ in-spec 2 mode: minmax(เลข/tag ต่อตัว) | offset(tag อ้างอิง ± offset)
+//   ใช้ทั้งเกณฑ์กลางของ param (fields[].spec) และเกณฑ์เฉพาะบ่อ (stations[].spec[<param>])
+function _spec(raw) {
+  const s = _obj(raw);
+  const num = (x) => (x == null || x === '' || !Number.isFinite(Number(x))) ? null : Number(x);
+  const tg = (x) => { const o = _obj(x); return (o.device && o.tag) ? { device: String(o.device), tag: String(o.tag) } : null; };
+  return {
+    mode: s.mode === 'offset' ? 'offset' : 'minmax',
+    min: num(s.min), max: num(s.max),                    // fixed (minmax mode · backward compat)
+    minTag: tg(s.minTag), maxTag: tg(s.maxTag),          // ถ้ามี → ใช้ tag แทนเลข (minmax mode)
+    refTag: tg(s.refTag), minOff: num(s.minOff), maxOff: num(s.maxOff),   // offset mode: min=ref+minOff · max=ref+maxOff
+    warn: s.warn,
+  };
+}
+
+// เกณฑ์นี้ "ตั้งไว้จริง" ไหม (ว่างเปล่า = ไม่ override) — ใช้คัดเกณฑ์เฉพาะบ่อที่ผู้ใช้ไม่ได้กรอก
+function _specSet(s) {
+  return !!(s && (s.min != null || s.max != null || s.minTag || s.maxTag || (s.mode === 'offset' && s.refTag)));
+}
+
 // normalize + ใส่ค่า default · throw ถ้าโครงผิดร้ายแรง
 function normalizeLineConfig(raw, file) {
   const c = _obj(raw);
@@ -17,7 +37,18 @@ function normalizeLineConfig(raw, file) {
   if (!isSnapshot && decode.eventType == null) throw new Error(`[lineConfig] ${line}: decode.eventType ต้องระบุ`);
   const events = _obj(c.events);
   for (const k of ['ENTER', 'STEP', 'STAGE', 'EXIT']) events[k] = _arr(events[k]).map(Number);
+  // stations — เพิ่มเกณฑ์เฉพาะบ่อ: stations[<id>].spec = { <paramKey>: spec } ทับเกณฑ์กลางของ param นั้น
+  //   บ่อเดียวกัน param เดียวกันแต่คนละไลน์อุณหภูมิคนละช่วง (D/G ~62°C vs M1A ~95°C) → เกณฑ์เดียวทั้งไลน์ใช้ไม่ได้
+  //   ไม่ได้ตั้ง = ตกไปใช้เกณฑ์กลางเหมือนเดิม (config เก่าไม่กระทบ)
   const stations = _obj(c.stations);
+  for (const id of Object.keys(stations)) {
+    const st = _obj(stations[id]);
+    const sp = _obj(st.spec);
+    const out = {};
+    for (const k of Object.keys(sp)) { const s = _spec(sp[k]); if (_specSet(s)) out[k] = s; }
+    if (Object.keys(out).length) stations[id] = { ...st, spec: out };
+    else if (st.spec != null) { const { spec, ...rest } = st; stations[id] = rest; }   // ตั้งแล้วลบทิ้ง = ไม่ต้องเก็บ key ว่าง
+  }
   const fields = _arr(c.fields).map((f) => ({
     key: String(f.key || '').trim(),
     label: String(f.label || f.key || '').trim(),
@@ -29,21 +60,10 @@ function normalizeLineConfig(raw, file) {
     show: f.show === 'avg' ? 'avg' : (f.show === 'all' ? 'all' : 'last'),   // measure: รายงานโชว์ ค่าล่าสุด(default)/เฉลี่ย/ทุกค่า
     source: _obj(f.source),                                  // {kind:plc|manual|formula, index|expr}
     tag: _obj(f.tag),                                        // {device,tag} — job-field อ่านจาก tag (เช่น barcode)
-    spec: (() => {                                           // เกณฑ์ in-spec 2 mode: minmax(เลข/tag ต่อตัว) | offset(tag อ้างอิง ± offset)
-      const s = _obj(f.spec);
-      const num = (x) => (x == null || x === '' || !Number.isFinite(Number(x))) ? null : Number(x);
-      const tg = (x) => { const o = _obj(x); return (o.device && o.tag) ? { device: String(o.device), tag: String(o.tag) } : null; };
-      return {
-        mode: s.mode === 'offset' ? 'offset' : 'minmax',
-        min: num(s.min), max: num(s.max),                    // fixed (minmax mode · backward compat)
-        minTag: tg(s.minTag), maxTag: tg(s.maxTag),          // ถ้ามี → ใช้ tag แทนเลข (minmax mode)
-        refTag: tg(s.refTag), minOff: num(s.minOff), maxOff: num(s.maxOff),   // offset mode: min=ref+minOff · max=ref+maxOff
-        warn: s.warn,
-      };
-    })(),
+    spec: _spec(f.spec),                                     // เกณฑ์กลางของ param (บ่อไหนไม่ได้ตั้งเอง = ใช้ตัวนี้)
     track: (() => {
       const t = _obj(f.track);
-      const sum = ['avg', 'mid'].includes(t.summary) ? t.summary : 'last';   // last=ค่าตอนออก · avg=เฉลี่ย · mid=ค่ากลางเวลาในบ่อ
+      const sum = ['avg', 'mid', 'first'].includes(t.summary) ? t.summary : 'last';   // last=ค่าตอนออก · avg=เฉลี่ย · mid=ค่ากลางเวลาในบ่อ · first=ค่าตอนลงบ่อครั้งแรก
       return { minMax: t.minMax === true, summary: sum, graph: t.graph === true };
     })(),   // min/max + สรุป last/avg/mid + graph=เก็บ minigraph (series ระหว่างชุบ)
     display: { table: true, mimic: false, report: false, order: 0, ..._obj(f.display) },

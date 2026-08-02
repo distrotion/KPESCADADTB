@@ -139,6 +139,21 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);
   }
 
   // 3) step → merge เข้า <job>.steps[station]
+  // หมายเหตุต่อบ่อ (คนพิมพ์เองในใบรายงาน) — merge เฉพาะ key note · ไม่แตะ params/stats/เวลาที่ engine เขียนไว้
+  //   ย้อนบ่อ = steps เก็บบ่อละ 1 ค่า → หมายเหตุเป็น "ต่อบ่อ" (รอบหลังทับรอบแรก) ตามที่ตกลงไว้
+  async setStepNote(jobKey, station, note) {
+    const line = this._lineOf(jobKey);
+    const { rows } = await this.pool.query(
+      `UPDATE ${this._t(line, 'job')}
+         SET steps = jsonb_set(COALESCE(steps,'{}'::jsonb), ARRAY[$2::text],
+               (COALESCE(steps->$2, '{}'::jsonb) || $3::jsonb), true),
+             updated_at = $4
+       WHERE job_key = $1
+       RETURNING job_key`,
+      [jobKey, String(station), JSON.stringify({ note: note == null ? '' : String(note) }), Date.now()]);
+    return rows.length > 0;
+  }
+
   async upsertStep(jobKey, step) {
     const line = this._lineOf(jobKey);
     const station = String(step.station);

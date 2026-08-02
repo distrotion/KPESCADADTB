@@ -127,6 +127,18 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);`;
   }
 
   // 3) step → merge เข้า <job>.steps[station] (read-modify-write · เลี่ยง json path quoting)
+  // หมายเหตุต่อบ่อ — merge เฉพาะ key note (ดู sqlStore.setStepNote)
+  async setStepNote(jobKey, station, note) {
+    const jt = this._t(this._lineOf(jobKey), 'job');
+    const row = this.db.prepare(`SELECT steps FROM ${jt} WHERE job_key=?`).get(jobKey);
+    if (!row) return false;
+    const steps = JSON.parse(row.steps || '{}');
+    const st = String(station);
+    steps[st] = { ...(steps[st] || {}), note: note == null ? '' : String(note) };
+    this.db.prepare(`UPDATE ${jt} SET steps=?, updated_at=? WHERE job_key=?`).run(JSON.stringify(steps), Date.now(), jobKey);
+    return true;
+  }
+
   async upsertStep(jobKey, step) {
     const line = this._lineOf(jobKey);
     const jt = this._t(line, 'job');

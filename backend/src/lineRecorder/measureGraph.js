@@ -1,6 +1,7 @@
 // measureGraph.js — auto Query Buffer สำหรับกราฟ "ค่าที่คนวัดเอง" (measure)
-//   1 measure field = 1 buffer · แถว = 1 งาน (N งานล่าสุด) · คอลัมน์ค่าแยกตามบ่อ → chart xy
-//     x = ฟิวของงาน (barcode/carrier ตามที่ตั้ง) · y = <key>_<station> ต่อบ่อ
+//   1 measure field = 1 buffer · แถว = 1 งาน (N งานล่าสุด) · 1 คอลัมน์ค่าต่อ field → chart xy
+//     x = ฟิวของงาน (barcode/carrier ตามที่ตั้ง) · y = <key> (ค่าของงาน ไม่แยกบ่อแล้ว)
+//   ค่าที่วัดผูกกับ "งาน" ไม่ใช่บ่อ — แถวเก่าที่ยังมี station ติดมาก็นับรวมเส้นเดียวกัน
 //   ผูกกับ DB เดียวกับ store ของไลน์ (source.storeDb) — ตาราง lr_<line>_job + lr_<line>_measure
 
 // ต้องตรงกับ lineStore/sqlStore.js `_sid()` เป๊ะ ๆ (ชื่อตารางเดียวกัน) — แทนอักขระพิเศษด้วย _ ไม่ใช่ลบทิ้ง
@@ -9,13 +10,6 @@ const sid = (line) => String(line).replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
 
 // ชื่อ buffer ต้อง deterministic → upsert ได้ (ไม่งั้น save ไลน์ทีเดียวได้ buffer ซ้ำ)
 function bufferName(line, key) { return `measure: ${line} · ${key}`; }
-
-// บ่อที่ field นี้ให้วัด — ว่าง = ทุกบ่อของไลน์ (เรียงตาม seq เพื่อให้ลำดับ series คงที่)
-function stationsOf(cfg, field) {
-  if (field.stations && field.stations.length) return field.stations.map(String);
-  const st = cfg.stations || {};
-  return Object.keys(st).sort((a, b) => ((st[a].seq || 0) - (st[b].seq || 0)));
-}
 
 // คอลัมน์ที่ chart จะใช้เป็นแกน X — ฟิวของงาน (job scope) ที่ตั้งไว้ · fallback = carrier
 function xColumnOf(cfg) {
@@ -26,7 +20,7 @@ function xColumnOf(cfg) {
 }
 
 // ── ค่าที่เป็นตัวแทนเมื่อมีหลายค่าตกอยู่ที่จุดเดียวกัน ────────────────────────
-//   ซ้ำได้ 2 ระดับ: (1) งานเดียว บ่อเดิม วัดซ้ำหลายครั้ง  (2) X เดียวกันหลายชิ้นงาน (order เดียวกัน)
+//   ซ้ำได้ 2 ระดับ: (1) งานเดียว วัดซ้ำหลายครั้ง  (2) X เดียวกันหลายชิ้นงาน (order เดียวกัน)
 //   ทั้งสองระดับใช้กติกาเดียวกัน (graphAgg) — ต้องเป็น SQL มาตรฐาน ใช้ได้ทั้ง pg/mysql/sqlite/mssql
 const AGGS = ['last', 'avg', 'max', 'min'];
 function aggOf(cfg) {
@@ -34,14 +28,13 @@ function aggOf(cfg) {
   return AGGS.includes(a) ? a : 'last';
 }
 
-// SQL expression ที่ยุบหลายแถวเหลือค่าเดียว · cond = เงื่อนไขเลือกบ่อ
+// SQL expression ที่ยุบทุกใบวัดของ field นี้เหลือค่าเดียว (ไม่แยกบ่อ)
 //   last อาศัย subquery x (เวลาล่าสุดของกลุ่ม) ที่ join ไว้ให้แล้ว — ตัวอื่นไม่ต้องใช้
-function valueExpr(agg, cond) {
-  const c = cond || '1=1';
-  if (agg === 'avg') return `AVG(CASE WHEN ${c} THEN m.value END)`;
-  if (agg === 'max') return `MAX(CASE WHEN ${c} THEN m.value END)`;
-  if (agg === 'min') return `MIN(CASE WHEN ${c} THEN m.value END)`;
-  return `MAX(CASE WHEN ${c} AND m.ts = x.mts THEN m.value END)`;   // last (default)
+function valueExpr(agg) {
+  if (agg === 'avg') return 'AVG(m.value)';
+  if (agg === 'max') return 'MAX(m.value)';
+  if (agg === 'min') return 'MIN(m.value)';
+  return 'MAX(CASE WHEN m.ts = x.mts THEN m.value END)';   // last (default)
 }
 
 // ยุบชิ้นงานที่ X ซ้ำกันให้เหลือจุดเดียวหรือไม่
@@ -61,9 +54,20 @@ function headerExpr(dialect, key, alias = 'j') {
 function limitClause(dialect, n) { return dialect === 'mssql' ? '' : ` LIMIT ${n}`; }
 function topClause(dialect, n) { return dialect === 'mssql' ? `TOP ${n} ` : ''; }
 
-// SQL: N งานล่าสุด (เรียงเวลา) + ค่าที่วัดแยกคอลัมน์ต่อบ่อ
-//   pivot ด้วย MAX/AVG(CASE …) = มาตรฐาน SQL ใช้ได้ทุก dialect (FILTER ใช้ไม่ได้บน mysql/mssql)
-//   agg=last: join subquery x = เวลาล่าสุดของ "กลุ่ม" + บ่อ → เลือกแถวตัวแทน
+// ชื่อคอลัมน์ค่าที่วัด = key ของ field · แต่ต้องไม่ชนคอลัมน์ประจำที่ SELECT เดียวกันส่งออกอยู่แล้ว
+//   (carrier / enter_at / last_measure_ts / คอลัมน์แกน X) — ชนแล้วค่าจะทับกันเงียบ ๆ
+//   เช่น field key = 'carrier' → คอลัมน์ carrier กลายเป็นค่าที่วัด เลขแคร่จริงหาย · X=carrier ยิ่งกลายเป็นพล็อตค่ากับตัวเอง
+//   ชน = เติมท้าย _val (deterministic → buildSql กับ yCols ต้องใช้ฟังก์ชันนี้ตัวเดียวกันเสมอ)
+const RESERVED_COLS = ['carrier', 'enter_at', 'last_measure_ts'];
+function valueColName(cfg, field) {
+  const key = String(field.key);
+  return (RESERVED_COLS.includes(key) || key === xColumnOf(cfg)) ? `${key}_val` : key;
+}
+
+// SQL: N งานล่าสุด (เรียงเวลา) + ค่าที่วัด 1 คอลัมน์ (ชื่อ = key ของ field · ชนคอลัมน์ประจำ = <key>_val)
+//   ยุบด้วย MAX/AVG(…) = มาตรฐาน SQL ใช้ได้ทุก dialect (FILTER/window ใช้ไม่ได้บน mysql/mssql)
+//   นับทุกใบวัดของ (งาน, key) ไม่สนใจ station — ใบเก่ามี ใบใหม่ไม่มี ต้องอยู่เส้นเดียวกัน
+//   agg=last: join subquery x = เวลาล่าสุดของ "กลุ่ม" → เลือกแถวตัวแทน
 //     กลุ่ม = job_key (ไม่ยุบ) หรือ X (ยุบ order เดียวกัน) — ต้องตรงกับ GROUP BY ข้างนอก
 //     ไม่งั้นค่าล่าสุดข้ามชิ้นงานจะเพี้ยน (MAX ของ "ค่า" ไม่ใช่ของ "เวลา")
 function buildSql(cfg, field, { limit, dialect = 'pg' } = {}) {
@@ -76,8 +80,7 @@ function buildSql(cfg, field, { limit, dialect = 'pg' } = {}) {
   const agg = aggOf(cfg);
   const merge = mergeSameX(cfg);
   const q = dialect === 'mysql' ? '`' : '"';                       // quote ชื่อคอลัมน์
-  const cols = stationsOf(cfg, field).map((s) =>
-    `  ${valueExpr(agg, `m.station = '${s}'`)} AS ${q}${key}_${s}${q}`);
+  const valCol = `  ${valueExpr(agg)} AS ${q}${valueColName(cfg, field)}${q}`;   // 1 เส้น = 1 field
   // N งานล่าสุด — ใช้ทั้งใน FROM และใน subquery x (ตอนยุบ) จึงทำเป็นตัวสร้างซ้ำได้
   //   ตัดงานที่ไม่มีค่าในแกน X ทิ้ง: วาดไม่ได้ (ไม่มีป้าย) และถ้าเป็น NULL การ join แบบ x.gx = X จะไม่ match
   //   (NULL = NULL เป็น false ใน SQL) → ค่าทั้งกลุ่มหายเงียบ ๆ
@@ -91,22 +94,22 @@ function buildSql(cfg, field, { limit, dialect = 'pg' } = {}) {
   const sql = [
     `SELECT ${xSel} AS ${q}${xcol}${q},`,
     merge ? `  MAX(j.carrier) AS carrier, MAX(j.enter_at) AS enter_at,` : `  j.carrier, j.enter_at,`,
-    cols.join(',\n') + (cols.length ? ',' : ''),
+    valCol + ',',
     `  MAX(m.ts) AS last_measure_ts`,
     `FROM ${jobSub('j')}`,
     `LEFT JOIN ${mt} m ON m.job_key = j.job_key AND m.key = '${key}'`,
   ];
   if (agg === 'last') {
     sql.push(merge
-      // ยุบ: เวลาล่าสุดต่อ (X, บ่อ) — ต้อง join job เพื่ออ่าน X และจำกัดชุดงานให้เท่ากับข้างนอก
-      ? [`LEFT JOIN (SELECT ${headerExpr(dialect, xcol, 'j2')} AS gx, m2.station, MAX(m2.ts) AS mts`,
+      // ยุบ: เวลาล่าสุดต่อ X — ต้อง join job เพื่ออ่าน X และจำกัดชุดงานให้เท่ากับข้างนอก
+      ? [`LEFT JOIN (SELECT ${headerExpr(dialect, xcol, 'j2')} AS gx, MAX(m2.ts) AS mts`,
          `           FROM ${jobSub('j2')}`,
          `           JOIN ${mt} m2 ON m2.job_key = j2.job_key AND m2.key = '${key}'`,
-         `           GROUP BY ${headerExpr(dialect, xcol, 'j2')}, m2.station) x`,
-         `       ON x.gx = ${xSel} AND x.station = m.station`].join('\n')
-      // ไม่ยุบ: เวลาล่าสุดต่อ (งาน, บ่อ)
-      : [`LEFT JOIN (SELECT job_key AS gx, station, MAX(ts) AS mts FROM ${mt} WHERE key = '${key}'`,
-         `           GROUP BY job_key, station) x ON x.gx = m.job_key AND x.station = m.station`].join('\n'));
+         `           GROUP BY ${headerExpr(dialect, xcol, 'j2')}) x`,
+         `       ON x.gx = ${xSel}`].join('\n')
+      // ไม่ยุบ: เวลาล่าสุดต่องาน
+      : [`LEFT JOIN (SELECT job_key AS gx, MAX(ts) AS mts FROM ${mt} WHERE key = '${key}'`,
+         `           GROUP BY job_key) x ON x.gx = m.job_key`].join('\n'));
   }
   sql.push(
     merge ? `GROUP BY ${xSel}` : `GROUP BY ${xSel}, j.carrier, j.enter_at`,
@@ -132,7 +135,7 @@ function bufferDef(cfg, field, { limit = 200, dialect = 'pg' } = {}) {
 }
 
 // สร้าง/อัปเดต buffer ให้ครบทุก measure field ของไลน์ (idempotent — ยึดชื่อ deterministic)
-//   คืน [{ key, bufferId, xCol, yCols }] ให้ UI เอาไปตั้ง chart ได้เลย
+//   คืน [{ key, bufferId, xCol, yCols }] ให้ UI เอาไปตั้ง chart ได้เลย (yCols = 1 เส้นต่อ field)
 function syncBuffers(cfg, qbm, { dialect = 'pg' } = {}) {
   if (!cfg || !qbm) return [];
   const conn = String((cfg.source || {}).storeDb || '');
@@ -149,7 +152,7 @@ function syncBuffers(cfg, qbm, { dialect = 'pg' } = {}) {
     out.push({
       key: f.key, label: f.label || f.key, bufferId: rec.id,
       xCol: xColumnOf(cfg),
-      yCols: stationsOf(cfg, f).map((s) => `${f.key}_${s}`),
+      yCols: [valueColName(cfg, f)],
       agg: aggOf(cfg), aggLabel: AGG_LABEL[aggOf(cfg)], merge: mergeSameX(cfg),
     });
   }
@@ -157,6 +160,6 @@ function syncBuffers(cfg, qbm, { dialect = 'pg' } = {}) {
 }
 
 module.exports = {
-  syncBuffers, bufferDef, buildSql, bufferName, xColumnOf, stationsOf,
+  syncBuffers, bufferDef, buildSql, bufferName, xColumnOf, valueColName,
   valueExpr, aggOf, mergeSameX, AGG_LABEL,
 };

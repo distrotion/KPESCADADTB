@@ -91,6 +91,16 @@ class FileStore {
     return this.db.jobs[k];
   }
 
+  // หมายเหตุต่อบ่อ — เขียนเฉพาะ key note (ดู sqlStore.setStepNote) · ไม่มี step นั้น = ไม่สร้างใหม่
+  async setStepNote(jobKey, station, note) {
+    const byStation = this.db.steps[jobKey];
+    const st = String(station);
+    if (!byStation || !byStation[st]) return false;
+    byStation[st] = { ...byStation[st], note: note == null ? '' : String(note) };
+    this._scheduleFlush();
+    return true;
+  }
+
   // STEP/STAGE → สร้าง/อัปเดต step ต่อ (jobKey, station) · merge params
   async upsertStep(jobKey, step) {
     const byStation = this.db.steps[jobKey] = this.db.steps[jobKey] || {};

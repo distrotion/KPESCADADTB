@@ -41,6 +41,10 @@ function mountLineRecorder(app, manager) {
     try { const b = req.body || {}; res.json({ ok: true, setNotes: manager.setSetNote(req.params.line, b.set, b.note) }); } catch (e) { se(res, e); }
   });
   // comment field (manual job-field) รายแถว — body { jobKey?, carrier?, set?, key, value }
+  // หมายเหตุต่อบ่อ (พิมพ์ในใบรายงาน) — body { jobKey, station, note } · ใครพิมพ์ก็ได้ ไม่ต้องเลือกชื่อ
+  app.post('/api/line-recorder/lines/:line/step-note', async (req, res) => {
+    try { res.json(await manager.setStepNote(req.params.line, req.body || {})); } catch (e) { se(res, e); }
+  });
   app.post('/api/line-recorder/lines/:line/comment', async (req, res) => {
     try { res.json(await manager.setComment(req.params.line, req.body || {})); } catch (e) { se(res, e); }
   });
@@ -62,17 +66,17 @@ function mountLineRecorder(app, manager) {
   });
 
   // ── measure (ค่าที่คนวัดเอง · คีย์ผ่านมือถือ) ────────────────────────────────
-  // ยิง barcode → งาน + บ่อที่อยู่ตอนนี้ + field ที่ต้องวัดในบ่อนั้น (ให้ UI มือถือโชว์)
+  // ยิง barcode → งาน + field ที่ต้องวัดของไลน์ (ค่าเป็นของงาน ไม่ผูกบ่อ · station แค่บอกว่างานอยู่ไหนตอนนี้)
   app.get('/api/line-recorder/lines/:line/scan', async (req, res) => {
     try {
       const line = req.params.line;
       const r = await manager.resolveByBarcode(line, req.query.barcode);
       const cfg = manager.getConfig(line) || {};
       res.json({ ok: true, job: r.job, station: r.station, inLine: !!r.inLine, ambiguous: !!r.ambiguous,
-        fields: manager.measureFields(line, r.station), measure: cfg.measure || {} });
+        fields: manager.measureFields(line), measure: cfg.measure || {} });
     } catch (e) { se(res, e); }
   });
-  // บันทึก 1 ครั้งที่วัด (append · ไม่ทับ) — body { barcode|jobKey, key, value, station?, actor?, note? }
+  // บันทึก 1 ครั้งที่วัด (append · ไม่ทับ) — body { barcode|jobKey, key, value, actor?, note? }
   app.post('/api/line-recorder/lines/:line/measure', async (req, res) => {
     try {
       const b = req.body || {};

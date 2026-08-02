@@ -43,12 +43,19 @@ function resolveSpec(spec, read) {
            max: spec.maxTag ? n(read(spec.maxTag.device, spec.maxTag.tag)) : n(spec.max) };
 }
 
+// เกณฑ์ของ param นี้ที่บ่อนี้ — บ่อตั้งเองไว้ = ใช้ของบ่อ · ไม่ได้ตั้ง = เกณฑ์กลางของ param
+//   stationSpec = stations[<id>].spec (map key→spec) ที่ lineConfig normalize มาแล้ว
+function _specFor(field, stationSpec) {
+  const own = stationSpec && stationSpec[field.key];
+  return own || field.spec;
+}
+
 // เกณฑ์ที่ resolve แล้วต่อ field ของ station → { key: {min,max} } (เฉพาะที่มีเกณฑ์)
-function resolveSpecMap(fields, station, read) {
+function resolveSpecMap(fields, station, read, stationSpec) {
   const out = {};
   for (const f of (fields || [])) {
     if (f.scope === 'step' && f.station && String(f.station) !== String(station)) continue;
-    const lim = resolveSpec(f.spec, read);
+    const lim = resolveSpec(_specFor(f, stationSpec), read);
     if (lim && (lim.min != null || lim.max != null)) out[f.key] = lim;
   }
   return out;
@@ -66,12 +73,13 @@ function violFromMap(values, specMap) {
 }
 
 // เช็คสเปก field (fixed เท่านั้น · ใช้ fallback ข้อมูลเก่าที่ไม่มี spec เก็บ) → คืน list ที่หลุด
-function checkSpec(fields, station, values) {
+//   stationSpec (ถ้าส่งมา) = เกณฑ์เฉพาะบ่อ ทับเกณฑ์กลางของ param
+function checkSpec(fields, station, values, stationSpec) {
   const viol = [];
   for (const f of (fields || [])) {
     if (f.scope === 'step' && f.station && String(f.station) !== String(station)) continue;
     const v = values[f.key]; if (v == null) continue;
-    const s = f.spec || {};
+    const s = _specFor(f, stationSpec) || {};
     if ((s.min != null && v < s.min) || (s.max != null && v > s.max)) viol.push({ key: f.key, value: v, spec: s });
   }
   return viol;
@@ -93,7 +101,8 @@ class LineEngine {
     let dwellSp = null, dwellTol = null, dwellInSpec = null;   // time setpoint ต่อ stage (เวลาชุบเป้าหมาย)
     if ((ev.type === 'STEP' || ev.type === 'STAGE') && ev.station) {
       const read = this.getTagValue || (() => null);
-      const m = resolveSpecMap(cfg.fields, ev.station, read);
+      const stSpec = ((cfg.stations || {})[String(ev.station)] || {}).spec;   // เกณฑ์เฉพาะบ่อ (ทับเกณฑ์กลาง)
+      const m = resolveSpecMap(cfg.fields, ev.station, read, stSpec);
       if (Object.keys(m).length) specMap = m;
       // stations[st].timeSp = { value | tag:{device,tag}, tolPct } · tolPct ว่าง = เทียบเฉย ๆ (ไม่ตัดสิน)
       const tsp = ((cfg.stations || {})[String(ev.station)] || {}).timeSp;
@@ -135,7 +144,8 @@ class LineEngine {
     let step = null; let violations = [];
     if ((ev.type === 'STEP' || ev.type === 'STAGE') && ev.station) {
       const values = _applyFormulas(cfg.fields, ev.station, { ...(ev.values || {}) });
-      violations = specMap ? violFromMap(values, specMap) : checkSpec(cfg.fields, ev.station, values);
+      violations = specMap ? violFromMap(values, specMap)
+        : checkSpec(cfg.fields, ev.station, values, ((cfg.stations || {})[String(ev.station)] || {}).spec);
       if (dwellInSpec === false) {   // เวลาชุบหลุด SP±% → ✗ + alarm (ผ่าน violation hook เดิม)
         const lo = Math.round(dwellSp * (1 - dwellTol / 100) * 100) / 100, hi = Math.round(dwellSp * (1 + dwellTol / 100) * 100) / 100;
         violations.push({ key: '__dwell', value: ev.dwell, spec: { min: lo, max: hi, sp: dwellSp, tolPct: dwellTol } });
