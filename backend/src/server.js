@@ -1184,6 +1184,43 @@ app.put('/api/layout', (req, res) => {
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
+// POST /api/layout/widget-config → patch config ของ widget ตัวเดียวในไฟล์ layout (working และ/หรือ deployed)
+//   ใช้กับ "ค่ากลาง" ที่ operator ตั้งจากหน้าจอ (เช่น คอลัมน์/หัวรายงานของใบรายงาน) → ทุกคนเห็นเหมือนกัน
+//   ทำไมไม่ให้ PUT ทั้ง layout: หน้า run/deploy ไม่ได้ถือ edit lock — ถ้าให้เขียนทั้งไฟล์จะทับงานที่ designer กำลังแก้
+//   body { widgetId, patch:{...}, target?: 'auto'|'working'|'deployed' }  (auto = แก้ทั้งสองฉบับเท่าที่มี widget นั้น)
+app.post('/api/layout/widget-config', (req, res) => {
+  try {
+    const { widgetId, patch, target = 'auto' } = req.body || {};
+    if (!widgetId || !patch || typeof patch !== 'object') {
+      return res.status(400).json({ ok: false, error: 'ต้องระบุ widgetId + patch' });
+    }
+    const files = target === 'working' ? ['dashboard.json']
+      : target === 'deployed' ? ['dashboard.deployed.json']
+      : ['dashboard.json', 'dashboard.deployed.json'];
+    const done = [];
+    for (const name of files) {
+      const fp = csvUtil.layoutFile(name);
+      if (!fs.existsSync(fp)) continue;
+      const layout = JSON.parse(fs.readFileSync(fp, 'utf8'));
+      let hit = false;
+      for (const page of (Array.isArray(layout.pages) ? layout.pages : [])) {
+        for (const w of (Array.isArray(page.widgets) ? page.widgets : [])) {
+          if (String(w.id) !== String(widgetId)) continue;
+          w.config = { ...(w.config || {}), ...patch };
+          hit = true;
+        }
+      }
+      if (!hit) continue;                                  // ไฟล์นี้ไม่มี widget ตัวนั้น (ยังไม่ deploy) → ข้าม
+      csvUtil.writeJsonAtomic(fp, layout);
+      done.push(name);
+    }
+    if (!done.length) return res.status(404).json({ ok: false, error: `ไม่พบ widget "${widgetId}" ใน layout` });
+    logActivity(req, { category: 'deploy', action: 'widget_config', target: String(widgetId),
+      detail: `${Object.keys(patch).join(',')} → ${done.join(' + ')}`, result: 'ok' });
+    res.json({ ok: true, updated: done });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // POST /api/layout/publish → snapshot working → deployed (atomic) — "เผยแพร่" ตอนกด Deploy
 //   body ว่าง = ใช้ working ที่เซฟไว้ล่าสุด · ส่ง body layout มาด้วยได้ (publish ค่าที่ส่งมาตรง ๆ)
 app.post('/api/layout/publish', (req, res) => {
