@@ -27,44 +27,60 @@ class ModbusDriver {
     this.type = device.type;
   }
 
+  // ทิ้ง client แบบ abort ทันที — close() ส่ง FIN ซึ่งไม่ยกเลิก TCP connect ที่ค้างกลางทาง
+  // (kernel SYN ต่ออีก ~1-2 นาที กลายเป็น ghost connection ไปกินช่อง connection ของ PLC)
+  _kill(client) {
+    if (!client) return;
+    try { client.destroy(() => {}); }
+    catch (_) { try { client.close(() => {}); } catch (_) {} } // RTU/port ที่ไม่มี destroy
+  }
+
   async connect() {
+    if (this._connecting) return false; // กัน connect ซ้อน (init + pollFn รอบแรกยิงพร้อมกัน)
+    this._connecting = true;
     try {
       // สร้าง client ใหม่ทุกครั้ง — เลี่ยง socket ค้างจากการเชื่อมต่อครั้งก่อน
-      try { if (this.client) this.client.close(() => {}); } catch (_) {}
+      this._kill(this.client);
       this.client = new ModbusRTU();
+      const client = this.client; // identity — กัน listener ของ socket เก่ามาแตะสถานะรอบใหม่
+      // ตั้งก่อน connect: ทุก transaction มี timer เสมอ (client ที่ race หลุดจะไม่มีทาง hang read)
+      client.setTimeout(2000);
 
       const { connection } = this.device;
       const doConnect = this.type === 'modbus_tcp'
-        ? this.client.connectTCP(connection.host, { port: connection.port })
-        : this.client.connectRTUBuffered(connection.port, {
+        ? client.connectTCP(connection.host, { port: connection.port })
+        : client.connectRTUBuffered(connection.port, {
             baudRate: connection.baudRate,
             dataBits: connection.dataBits,
             stopBits: connection.stopBits,
             parity: connection.parity,
           });
+      // ฝั่งแพ้ race อาจ settle ทีหลัง (หรือไม่ settle เลย) — กัน unhandled rejection
+      doConnect.catch(() => {});
       // connect timeout — กันค้างนานเมื่อ host ปิดเครื่อง/unreachable (ไม่มี RST)
       await Promise.race([
         doConnect,
         new Promise((_, rej) => setTimeout(() => rej(new Error('connect timeout')), 4000)),
       ]);
-      this.client.setID(this.device.connection.unitId || 1);
-      this.client.setTimeout(2000);
+      client.setID(this.device.connection.unitId || 1);
       this.connected = true;
 
       // ตรวจหลุดทันทีผ่าน socket events (เหมือน MC) — ไม่ต้องรอ read timeout
-      const sock = this.client._port && this.client._port._client;
+      const sock = client._port && client._port._client;
       if (sock && typeof sock.on === 'function') {
         sock.setKeepAlive(true, 3000); // ให้ OS probe หา peer ที่ตายแบบ abrupt เร็วขึ้น
-        sock.on('close', () => { this.connected = false; });
-        sock.on('error', () => { this.connected = false; });
+        sock.on('close', () => { if (this.client === client) this.connected = false; });
+        sock.on('error', () => { if (this.client === client) this.connected = false; });
       }
       console.log(`[Modbus] Connected: ${this.device.name}`);
+      return true; // ให้ autoProbe ใช้ตรวจ candidate ได้ (เหมือน MC)
     } catch (err) {
       this.connected = false;
-      // ปิด client ที่ค้าง (เช่น connect timeout) เพื่อไม่ให้ socket รั่ว
-      try { this.client.close(() => {}); } catch (_) {}
+      // abort client ที่ค้าง (เช่น connect timeout) — ตัด SYN ทิ้งทันที ไม่ปล่อย ghost ไปหา PLC
+      this._kill(this.client);
       console.error(`[Modbus] Connect error (${this.device.name}):`, err.message);
-    }
+      return false;
+    } finally { this._connecting = false; }
   }
 
   _wordCount(dataType) {
@@ -176,7 +192,7 @@ class ModbusDriver {
   }
 
   disconnect() {
-    try { this.client.close(() => {}); } catch (_) {}
+    this._kill(this.client);
     this.connected = false;
   }
 }
