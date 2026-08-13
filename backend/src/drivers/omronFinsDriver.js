@@ -22,7 +22,8 @@ class OmronFinsDriver {
     return this.transport === 'tcp' ? this._connectTcp() : this._connectUdp();
   }
 
-  // FINS/UDP — connectionless: bind แล้วถือว่าพร้อมส่ง (เหมือนเดิม)
+  // FINS/UDP — connectionless: bind บอกแค่ socket ฝั่งเราพร้อม ไม่ได้แปลว่า PLC อยู่
+  // → probe อ่านจริง 1 word ก่อนถือว่า online · ระหว่างใช้งานนับ timeout ติดกัน ครบ 3 = offline
   _connectUdp() {
     if (this.socket) { try { this.socket.close(); } catch (_) {} this.socket = null; }
     this._connecting = new Promise((resolve) => {
@@ -36,12 +37,37 @@ class OmronFinsDriver {
         resolve(false);
       });
       sock.bind(() => {
-        this.connected = true; this._connecting = null;
-        console.log(`[Omron FINS/UDP] Ready: ${this.device.name}`);
-        resolve(true);
+        this._udpProbe().then((ok) => {
+          this.connected = ok;
+          this._connecting = null;
+          if (ok) console.log(`[Omron FINS/UDP] Ready: ${this.device.name}`);
+          else { try { sock.close(); } catch (_) {} if (this.socket === sock) this.socket = null; }
+          resolve(ok);
+        });
       });
     });
     return this._connecting;
+  }
+
+  // อ่าน 1 word จาก area/address ของ tag แรก (ไม่มี tag → DM0) — ได้ reply อะไรก็ตาม = PLC อยู่
+  // (ไม่ผ่าน _readWords เพราะ reply ที่เป็น error end-code ก็นับว่า PLC อยู่)
+  async _udpProbe() {
+    const t = (this.device.tags || []).find((x) => x.address != null && !x.simulate);
+    const areaCode = this._getAreaCode((t && t.area) || 'DM');
+    const word = t ? this._parseAddr(t.address).word : 0;
+    const resp = await this._sendFins(0x01, 0x01, [
+      areaCode, (word >> 8) & 0xFF, word & 0xFF, 0x00, 0x00, 0x01,
+    ], 2000);
+    return resp != null;
+  }
+
+  // UDP ไม่มี event บอกว่าปลายทางตาย — นับ no-reply ติดกัน (1-2 ครั้ง = datagram หายปกติของ UDP)
+  _udpNoReply() {
+    this._udpMiss = (this._udpMiss || 0) + 1;
+    if (this._udpMiss >= 3 && this.connected) {
+      this.connected = false;
+      console.error(`[Omron FINS/UDP] ${this.device.name}: no reply x${this._udpMiss} → offline`);
+    }
   }
 
   // FINS/TCP — ต่อ TCP แล้วทำ node-address handshake ก่อนคุย FINS
@@ -336,17 +362,17 @@ class OmronFinsDriver {
     ]);
   }
 
-  _sendFins(mainCode, subCode, data) {
+  _sendFins(mainCode, subCode, data, timeoutMs) {
     const frame = this._buildFinsCommand(mainCode, subCode, data);
     // ⚠️ serialize ทุกคำสั่งบน socket เดียว: โค้ดนี้คืน response เฟรมแรกที่ครบ (ไม่จับคู่ SID)
     //    ถ้า read (poll) กับ write (set) ซ้อนกัน → response 2 คำสั่งปนกัน = ค่าหลาย tag มั่ว (เหมือน MC)
-    const run = () => (this.transport === 'tcp' ? this._sendFinsTcp(frame) : this._sendFinsUdp(frame));
+    const run = () => (this.transport === 'tcp' ? this._sendFinsTcp(frame) : this._sendFinsUdp(frame, timeoutMs));
     this._txChain = (this._txChain || Promise.resolve()).then(run, run);
     return this._txChain;
   }
 
   // FINS/UDP — ส่ง datagram, รอ message ตอบกลับ
-  _sendFinsUdp(frame) {
+  _sendFinsUdp(frame, timeoutMs = 3000) {
     return new Promise((resolve) => {
       const sock = this.socket;
       if (!sock) return resolve(null);
@@ -354,12 +380,13 @@ class OmronFinsDriver {
       const onMessage = (response) => {
         clearTimeout(t);
         sock.removeListener('message', onMessage);
+        this._udpMiss = 0;
         resolve(response.slice(14)); // ตัด 14-byte FINS response header + end code
       };
       sock.on('message', onMessage);
-      const t = setTimeout(() => { sock.removeListener('message', onMessage); resolve(null); }, 3000);
+      const t = setTimeout(() => { sock.removeListener('message', onMessage); this._udpNoReply(); resolve(null); }, timeoutMs);
       sock.send(frame, 0, frame.length, port, host, (err) => {
-        if (err) { clearTimeout(t); sock.removeListener('message', onMessage); resolve(null); }
+        if (err) { clearTimeout(t); sock.removeListener('message', onMessage); this._udpNoReply(); resolve(null); }
       });
     });
   }

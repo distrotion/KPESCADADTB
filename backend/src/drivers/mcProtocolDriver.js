@@ -60,7 +60,8 @@ class MCProtocolDriver {
     return this._connecting;
   }
 
-  // UDP เป็น connectionless → bind socket แล้วถือว่าพร้อมส่ง (online ตัดสินจากการอ่านสำเร็จ/_lastGoodRead)
+  // UDP เป็น connectionless — bind บอกแค่ socket ฝั่งเราพร้อม ไม่ได้แปลว่า PLC อยู่
+  // → probe อ่านจริง 1 point ก่อนถือว่า online · ระหว่างใช้งานนับ timeout ติดกัน ครบ 3 = offline
   _connectUdp() {
     if (this.socket) { try { this.socket.close(); } catch (_) {} this.socket = null; }
     this._connecting = new Promise((resolve) => {
@@ -75,35 +76,58 @@ class MCProtocolDriver {
         resolve(false);
       });
       sock.bind(() => {
-        this.connected = true;
-        this._connecting = null;
-        console.log(`[MC Protocol/UDP] Ready: ${this.device.name}`);
-        resolve(true);
+        this._udpProbe().then((ok) => {
+          this.connected = ok;
+          this._connecting = null;
+          if (ok) console.log(`[MC Protocol/UDP] Ready: ${this.device.name}`);
+          else { try { sock.close(); } catch (_) {} if (this.socket === sock) this.socket = null; }
+          resolve(ok);
+        });
       });
     });
     return this._connecting;
   }
 
+  // อ่าน 1 point จาก address ของ tag แรก (ไม่มี tag → D0) — ได้ reply อะไรก็ตาม = PLC อยู่
+  async _udpProbe() {
+    const t = (this.device.tags || []).find((x) => x.address && !x.simulate);
+    const addr = t ? String(t.address) : 'D0';
+    const deviceCode = addr.replace(/[0-9]/g, '') || 'D';
+    const deviceNum = parseInt(addr.replace(/[A-Za-z]/g, ''), 10) || 0;
+    const isBit = ['M', 'X', 'Y', 'B', 'F', 'L', 'S', 'V'].includes(deviceCode.toUpperCase());
+    const resp = await this._sendCommand(deviceCode, deviceNum, 1, isBit, 2000);
+    return resp != null;
+  }
+
+  // UDP ไม่มี event บอกว่าปลายทางตาย — นับ no-reply ติดกัน (1-2 ครั้ง = datagram หายปกติของ UDP)
+  _udpNoReply() {
+    this._udpMiss = (this._udpMiss || 0) + 1;
+    if (this._udpMiss >= 3 && this.connected) {
+      this.connected = false;
+      console.error(`[MC Protocol/UDP] ${this.device.name}: no reply x${this._udpMiss} → offline`);
+    }
+  }
+
   // ส่ง request → คืน response buffer เต็ม หรือ null — รองรับทั้ง TCP/UDP
   // ⚠️ serialize ทุกคำสั่งบน socket เดียว: MC 3E ไม่มี transaction ID จับคู่ req↔resp
   //    ถ้า read (poll) กับ write (set) ซ้อนกัน → response 2 คำสั่งปนกัน = ค่าหลาย tag มั่ว/สลับ
-  _transact(request) {
-    const run = () => this._transactRaw(request);
+  _transact(request, timeoutMs) {
+    const run = () => this._transactRaw(request, timeoutMs);
     this._txChain = (this._txChain || Promise.resolve()).then(run, run);
     return this._txChain;
   }
 
-  _transactRaw(request) {
+  _transactRaw(request, timeoutMs = 3000) {
     return new Promise((resolve) => {
       const sock = this.socket;
       if (!sock) return resolve(null);
       if (this.transport === 'udp') {
         const { host, port } = this.device.connection;
-        const onMsg = (msg) => { clearTimeout(t); sock.removeListener('message', onMsg); resolve(msg); };
+        const onMsg = (msg) => { clearTimeout(t); sock.removeListener('message', onMsg); this._udpMiss = 0; resolve(msg); };
         sock.on('message', onMsg);
-        const t = setTimeout(() => { sock.removeListener('message', onMsg); resolve(null); }, 3000);
+        const t = setTimeout(() => { sock.removeListener('message', onMsg); this._udpNoReply(); resolve(null); }, timeoutMs);
         sock.send(request, port, host, (err) => {
-          if (err) { clearTimeout(t); sock.removeListener('message', onMsg); resolve(null); }
+          if (err) { clearTimeout(t); sock.removeListener('message', onMsg); this._udpNoReply(); resolve(null); }
         });
       } else {
         let buf = Buffer.alloc(0);
@@ -308,7 +332,7 @@ class MCProtocolDriver {
     return Buffer.concat([header, dataLen, body]);
   }
 
-  async _sendCommand(deviceCode, startAddr, count, isBit) {
+  async _sendCommand(deviceCode, startAddr, count, isBit, timeoutMs) {
     const addrBuf = Buffer.alloc(4);
     addrBuf.writeUInt32LE(startAddr, 0);
     const cntBuf = Buffer.alloc(2);
@@ -319,7 +343,7 @@ class MCProtocolDriver {
     const subCmd = isBit ? 0x0001 : 0x0000;
     const request = this._buildRequest(0x0401, subCmd, payload);
 
-    const resp = await this._transact(request);
+    const resp = await this._transact(request, timeoutMs);
     return resp ? resp.slice(11) : null; // ตัด 11-byte 3E response header
   }
 
