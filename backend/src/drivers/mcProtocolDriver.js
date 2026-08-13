@@ -297,6 +297,30 @@ class MCProtocolDriver {
     await this._sendWriteCommand(deviceCode, deviceNum, buf, false);
   }
 
+  // ── Block write/read — N word ต่อเนื่องด้วยคำสั่งเดียว (0x1401/0x0401) แทนยิงทีละ word ──
+  //   command เดียวกับที่ Node-RED "MC Write"/"MC Read" ใช้ทำ batch มาแต่แรก (§2500 legacy)
+  //   words เป็น raw UINT16 ล้วน (caller เข้ารหัส float/int32/ฯลฯ มาเองแล้ว — ดู scadaencode.js
+  //   ฝั่ง SOI8GWPLC) เก็บ low-word ก่อนตาม MELSEC เสมอ ไม่มี wordSwap ต่างจาก writeTag
+  async writeBlock(deviceCode, startAddr, words) {
+    if (!this.connected) throw new Error('Not connected');
+    const buf = Buffer.alloc(words.length * 2);
+    words.forEach((w, i) => buf.writeUInt16LE(w & 0xFFFF, i * 2));
+    await this._sendWriteCommand(deviceCode, startAddr, buf, false);
+  }
+
+  async readBlock(deviceCode, startAddr, count) {
+    if (!this.connected) return null;
+    try {
+      const resp = await this._sendCommand(deviceCode, startAddr, count, false);
+      if (!resp || resp.length < count * 2) return null;
+      const out = [];
+      for (let i = 0; i < count; i++) out.push(resp.readUInt16LE(i * 2));
+      return out;
+    } catch (_) {
+      return null;
+    }
+  }
+
   _getDeviceCodeByte(code) {
     // MELSEC 3E binary device codes (1 byte)
     const map = {

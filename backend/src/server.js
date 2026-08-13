@@ -644,6 +644,33 @@ app.post('/api/write', async (req, res) => {
   }
 });
 
+// ── Block write — เขียนหลาย word ต่อเนื่องด้วยคำสั่งเดียว (แทนยิง /api/write ทีละ tag) ──
+//   ใช้เมื่อผู้เรียกรู้แน่นอนว่า address ต่อเนื่องกัน (เช่น SOI8GWPLC ส่งผล QC 15 word รวด
+//   ทุกครั้ง — ของเดิมยิง /api/write 15-30 ครั้งต่อ target แล้วรอ round-trip ทีละครั้ง)
+//   body: { deviceId, start:"W320", words:[uint16...] } → { success, written, readback }
+//   เพิ่มเข้ามาข้าง /api/write ไม่ได้แทนที่ — client เก่าที่ไม่รู้จัก endpoint นี้ (404) ยังใช้
+//   /api/write ทีละตัวได้ตามเดิม ไม่มีอะไรพัง
+app.post('/api/write-block', async (req, res) => {
+  const { deviceId, start, words } = req.body || {};
+  try {
+    const r = await engine.writeBlock(deviceId, start, words);
+    // log เฉพาะช่วงที่ tag แรกตั้ง logActivity ไว้ (เหมือน /api/write — ปกติ block เดียวกัน
+    // เป็นงานเดียวกันหมด เช็ค tag แรกเป็นตัวแทนทั้งชุดพอ)
+    try {
+      const dev = engine._findDevice(deviceId);
+      const firstTag = dev && dev.tags.find((t) => String(t.address) === String(start));
+      if (firstTag && firstTag.logActivity) {
+        logActivity(req, { category: 'tag', action: 'write-block',
+          target: `${dev.name || dev.id}›${start}+${Array.isArray(words) ? words.length : 0}`,
+          detail: `words=${JSON.stringify(words)}`, result: 'ok' });
+      }
+    } catch (_) {}
+    res.json({ success: true, ...r });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
 });

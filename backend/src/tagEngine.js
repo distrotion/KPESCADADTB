@@ -648,6 +648,84 @@ class TagEngine {
   }
 
   /**
+   * WRITE BLOCK — เขียนหลาย word ต่อเนื่องด้วยคำสั่งเดียว แทน writeTag ทีละตัว (ทีละ round-trip)
+   * ใช้เมื่อผู้เรียกรู้แน่นอนว่า address ต่อเนื่องกันจริง (เช่น SOI8GWPLC ส่งผล QC 15 word รวด
+   * ทุกครั้ง) — คำสั่งเดียวกับที่ MC 3E ใช้ทำ batch write มาแต่แรก (0x1401 — Node-RED "MC Write"
+   * เดิมก็ใช้ command นี้) ต่างจาก writeTag ตรงที่รับ raw UINT16[] ดิบ ผู้เรียกเข้ารหัส
+   * float/int32/ฯลฯ มาเองแล้ว (คนละ tag ต่อ word ก็ยังต้องมีอยู่จริงในระบบถ้าอยากให้ tag store/
+   * KPENETWORK เห็นค่าอัปเดต — ตัวนี้ sync ให้เฉพาะ address ที่มี tag จริงเท่านั้น ไม่ auto-create)
+   *
+   * รองรับเฉพาะ mc_protocol/modbus_tcp (มี batch command จริงในโปรโตคอล — driver อื่นไม่มี
+   * writeBlock ก็จะโดน error ชัดเจน ไม่ fallback เงียบ ๆ ไปเขียนทีละตัวโดยไม่บอกผู้เรียก)
+   *
+   * @param deviceRef  device id/name
+   * @param startAddr  address เริ่มต้น เช่น "W320" / "D14100" / "HR10100"
+   * @param words      raw UINT16[] (0-65535) เรียงตาม address ต่อเนื่อง (words[0] = startAddr)
+   * @returns { written, readback: UINT16[]|null }
+   */
+  async writeBlock(deviceRef, startAddr, words) {
+    const device = this._findDevice(deviceRef);
+    if (!device) throw new Error(`Device not found: ${deviceRef}`);
+    if (!Array.isArray(words) || words.length === 0) throw new Error('words ต้องเป็น array ไม่ว่าง');
+    // จำกัดไว้ต่ำกว่าเพดานจริงของโปรโตคอล (MC STRING เขียนได้ถึง 120 word, modbus FC16 ปกติ
+    // ~123 register) — 60 พอสำหรับงานจริงทุกเคสที่รู้จัก กันพิมพ์ผิดยิงยาวเกินจำเป็นเข้าเครื่อง
+    if (words.length > 60) throw new Error('words เกิน 60 ตัว (จำกัดกันยิงยาวเกินจำเป็น)');
+    for (const w of words) {
+      if (!Number.isInteger(w) || w < 0 || w > 0xFFFF) throw new Error(`words มีค่านอกช่วง UINT16: ${w}`);
+    }
+    const m = String(startAddr || '').match(/^([A-Za-z]+)(\d+)$/);
+    if (!m) throw new Error(`startAddr ไม่ถูกต้อง: ${startAddr}`);
+    const [, prefix, numStr] = m;
+    const startNum = parseInt(numStr, 10);
+    const isMc = device.type === 'mc_protocol';
+
+    const sim = device.type === 'virtual' || device.simulate;
+    let readback = null;
+
+    if (sim) {
+      // sim: ไม่มี driver จริงให้ batch — เขียนตรงเข้า buffer ของ tag ที่ตรง address ทีละตัว
+      // (การ "ประหยัด round-trip" ไม่มีความหมายกับ in-memory buffer อยู่แล้ว)
+      for (let i = 0; i < words.length; i++) {
+        const addr = `${prefix}${startNum + i}`;
+        const tag = device.tags.find((t) => String(t.address) === addr);
+        if (tag) this._simWrite(device, tag, words[i]);
+      }
+      readback = words;
+    } else {
+      if (!isMc && device.type !== 'modbus_tcp') {
+        throw new Error(`Block write ไม่รองรับ device type: ${device.type}`);
+      }
+      const driver = this.drivers.get(device.id);
+      if (!driver || !driver.connected) throw new Error(`Device not connected: ${deviceRef}`);
+      if (typeof driver.writeBlock !== 'function') {
+        throw new Error(`Block write ไม่รองรับสำหรับ driver นี้: ${deviceRef}`);
+      }
+      if (isMc) await driver.writeBlock(prefix, startNum, words);
+      else await driver.writeBlock(startNum, words);
+
+      // ยืนยันด้วยการอ่านกลับครั้งเดียว (ไม่ใช่ทีละ word เหมือน writeTag) — MC เช็ค end code
+      // ใน _sendWriteCommand อยู่แล้วว่า PLC ตอบรับ แต่ modbus writeRegisters resolve แปลว่า
+      // "ส่งสำเร็จ" เฉย ๆ ไม่ยืนยันค่าจริงในเครื่อง readback จึงยังจำเป็นทั้งสองโปรโตคอล
+      if (typeof driver.readBlock === 'function') {
+        readback = isMc
+          ? await driver.readBlock(prefix, startNum, words.length)
+          : await driver.readBlock(startNum, words.length);
+      }
+    }
+
+    // sync tag store ของทุก tag ที่มีอยู่จริงในช่วงนี้ (ข้าม address ที่ยังไม่เคยสร้าง tag —
+    // ค่ายังลงเครื่องจริงแล้ว แค่ store ไม่มีให้ sync จนกว่าจะมีใครสร้าง tag ที่ address นั้น)
+    const source = readback || words;
+    for (let i = 0; i < source.length; i++) {
+      const addr = `${prefix}${startNum + i}`;
+      const tag = device.tags.find((t) => String(t.address) === addr);
+      if (tag) this._setTagValue(device.id, tag.id, source[i], 'good');
+    }
+
+    return { written: words.length, readback: readback || null };
+  }
+
+  /**
    * setTagValue — ตั้งค่า tag ตรง ๆ ในหน่วยความจำ (ใช้โดย script)
    * ใช้ได้กับทุก tag (virtual = พักข้อมูล, physical = override ค่าชั่วคราว)
    */

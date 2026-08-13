@@ -191,6 +191,25 @@ class ModbusDriver {
     await this.client.writeRegisters(tag.address, words);
   }
 
+  // ── Block write/read — N holding register ต่อเนื่องด้วยคำสั่งเดียว (FC16/FC3) ──────────
+  //   ใช้เมื่อผู้เรียกรู้แน่นอนว่า address ต่อเนื่องกัน (SOI8GWPLC ส่งผล QC หลาย word รวด) —
+  //   เดิมต้องเรียก writeTag ทีละ tag = ทีละ round-trip ทีละ FC16 · แบบนี้เหลือ 1 round-trip
+  //   words เป็น raw UINT16 ล้วน (caller เข้ารหัส float/int32/ฯลฯ มาเองแล้ว เหมือน scadaencode.js)
+  async writeBlock(startAddr, words) {
+    if (!this.connected) throw new Error('Not connected');
+    await this.client.writeRegisters(startAddr, words);
+  }
+
+  async readBlock(startAddr, count) {
+    if (!this.connected) return null;
+    try {
+      const r = await this.client.readHoldingRegisters(startAddr, count);
+      return r && Array.isArray(r.data) ? r.data.slice(0, count) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   disconnect() {
     this._kill(this.client);
     this.connected = false;
