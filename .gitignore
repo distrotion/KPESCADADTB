@@ -5,6 +5,9 @@ node_modules/
 /layout/
 /datalog/
 /data/
+/licenses/
+/updates/
+/backups/
 /ports.json
 /manager/api-token.json
 /manager/access-gate.json
