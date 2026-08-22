@@ -18,6 +18,15 @@ const SPECIAL_TAGS = [
   { id: '__enabled', name: 'Enabled' },
 ];
 
+// ── tag พื้นที่ดิสก์ของ device gpio — สร้างให้อัตโนมัติครั้งเดียวต่อ device ──
+//   ปัก flag `diskTagsSeeded` (ห้ามขึ้นต้น '_' — saveConfig ตัด field ขึ้นต้น '_' ทิ้ง flag จะไม่ถูกบันทึก)
+//   ลบ tag ทิ้งเองแล้วต้องไม่กลับมาตอน restart → เช็ค flag ไม่ใช่เช็คว่ามี tag อยู่ไหม
+const GPIO_DISK_TAGS = [
+  { id: 'DISK_TOTAL', name: 'Disk Total', sysStat: 'disk_total' },
+  { id: 'DISK_USED',  name: 'Disk Used',  sysStat: 'disk_used'  },
+  { id: 'DISK_FREE',  name: 'Disk Free',  sysStat: 'disk_free'  },
+];
+
 class TagEngine {
   constructor(onTagUpdate, onDeviceStatus) {
     this.onTagUpdate = onTagUpdate;       // callback(deviceId, tagId, value, quality, ts)
@@ -42,6 +51,42 @@ class TagEngine {
     try { raw = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch (_) { raw = { devices: [] }; }
     const list = Array.isArray(raw.devices) ? raw.devices : [];
     this.allDevices = list;   // แหล่งความจริงเดียว (รวม disabled) — `devices` เป็น getter ที่ derive สด
+    this._backfillGpioDiskTags();
+  }
+
+  // เครื่องที่มี device gpio อยู่ก่อนอัปเวอร์ชัน → เติม tag ดิสก์ให้ครั้งเดียวตอน start
+  //   บันทึกไฟล์เมื่อมี device ที่เพิ่งถูกปัก flag (แม้เพิ่ม 0 tag เพราะสร้างมือไว้ครบแล้ว) — flag ต้องลง
+  //   ดิสก์เสมอ ไม่งั้น boot หน้าจะ seed ซ้ำ แล้ว tag ที่ user ลบทิ้งจะกลับมา
+  _backfillGpioDiskTags() {
+    let added = 0, marked = 0;
+    for (const device of this.allDevices) {
+      if (device.type !== 'gpio' || device.diskTagsSeeded) continue;
+      added += this._seedGpioDiskTags(device);
+      marked++;
+    }
+    if (marked > 0) {
+      this.saveConfig();
+      if (added > 0) console.log(`[gpio] เพิ่ม tag พื้นที่ดิสก์อัตโนมัติ ${added} tag (${marked} device)`);
+    }
+    return added;
+  }
+
+  // เติม tag ดิสก์ให้ device gpio หนึ่งตัว — idempotent · ไม่ทับ tag id ที่มีอยู่แล้ว · คืนจำนวนที่เพิ่ม
+  _seedGpioDiskTags(device) {
+    if (!device || device.type !== 'gpio' || device.diskTagsSeeded) return 0;
+    device.tags = device.tags || [];
+    let n = 0;
+    for (const t of GPIO_DISK_TAGS) {
+      if (device.tags.some(x => x && x.id === t.id)) continue;   // สร้างมือ/import ไว้แล้ว — ไม่แตะ
+      device.tags.push({
+        id: t.id, name: t.name, unit: 'GB', dataType: 'FLOAT',
+        direction: 'sys', sysStat: t.sysStat, decimals: 1,
+        logActivity: false, shared: false, group: '',
+      });
+      n++;
+    }
+    device.diskTagsSeeded = true;
+    return n;
   }
 
   // device ที่ enabled — derive สดจาก allDevices เสมอ (กัน drift เมื่อ add/update/remove ตอน runtime)
@@ -471,6 +516,7 @@ class TagEngine {
           bits: Number(tag.bits) || 0,      // MULTI_BIT: จำนวน bit ที่อ่านต่อเนื่องจาก address
           address: tag.address != null ? String(tag.address) : '',  // โชว์ M8+N ใน picker
           group: tag.group || '',           // กลุ่มย่อยภายใน device (ว่าง = ลอย) — หน้า Tags
+          decimals: tag.decimals == null ? null : Number(tag.decimals),   // ทศนิยมที่จะแสดง (null = ใช้ default 2)
           // sim ของ tag = tag.simulate (ระดับ tag) หรือทั้ง device เป็น sim/virtual
           simulate: !!tag.simulate || isSim,
           tagSim: !!tag.simulate,
@@ -804,6 +850,7 @@ class TagEngine {
       tags:         [],
     };
     this.allDevices.push(newDevice);
+    this._seedGpioDiskTags(newDevice);   // gpio ใหม่ = มี tag ดิสก์ติดมาเลย
     this.saveConfig();
     if (newDevice.enabled) this._initDevice(newDevice);
     return newDevice;

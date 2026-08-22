@@ -5,8 +5,7 @@
 #     powershell -ExecutionPolicy Bypass -File license_windows.ps1 -ShowId        # show machine-id + fingerprint (give to vendor)
 #     ... -Status                                                                  # current license status
 #     ... -Activate                                                                # scan USB for license.key -> install -> restart service
-#     ... -Activate -License "D:\license.key"                                      # specify a file path
-#     ... -Activate -License "<base64 license content>"                            # paste the license content directly
+#     ... -Activate -License "D:\license.key"                                      # specify file
 #     ... -Remove                                                                  # remove license (kept as backup)
 #     ... -DataDir "D:\KPE"  -Svc "kpe-scada"                                       # override data dir / service name
 param(
@@ -59,34 +58,20 @@ if ($Remove) {
   exit 0
 }
 
-# -- -Activate : install license from a file path, pasted base64 content, or USB scan -> restart --
+# -- -Activate : find license.key (USB or -License) -> install -> restart --
 if ($Activate) {
-  $b64 = ''
-  $src = $License.Trim()
-  if ($src) {
-    if (Test-Path -LiteralPath $src) {
-      $b64 = (Get-Content -Raw -LiteralPath $src).Trim() -replace '\s', ''
-      Write-Host "Found license file: $src"
-    } else {
-      # not a path -> user may have pasted the license content (base64) directly
-      $cand = $src -replace '\s', ''
-      if ($cand.Length -gt 80 -and $cand -match '^[A-Za-z0-9+/=]+$') {
-        try {
-          $json = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($cand))
-          if ($json -match '"sig"') { $b64 = $cand; Write-Host "Using pasted license content" }
-        } catch {}
-      }
-      if (-not $b64) { Write-Error "Not a file path, and not valid license content: $src"; exit 1 }
-    }
-  } else {
+  $src = $License
+  if (-not $src) {
     # scan removable drives (DriveType=2) for license.key
     foreach ($d in (Get-CimInstance Win32_LogicalDisk -Filter "DriveType=2")) {
       $p = Join-Path $d.DeviceID 'license.key'
-      if (Test-Path $p) { $b64 = (Get-Content -Raw -Path $p).Trim() -replace '\s', ''; Write-Host "Found license: $p"; break }
+      if (Test-Path $p) { $src = $p; break }
     }
-    if (-not $b64) { Write-Error "license.key not found (plug a USB with the file, paste the license content, or use -License <path>)"; exit 1 }
   }
+  if (-not $src -or -not (Test-Path $src)) { Write-Error "license.key not found (plug a USB with the file, or use -License <path>)"; exit 1 }
+  Write-Host "Found license: $src"
   if (-not (Test-Path $ConfigDir)) { New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null }
+  $b64 = (Get-Content -Raw -Path $src).Trim() -replace '\r?\n', ''
   $b64Fwd = $b64 -replace "'", "\'"
   $out = Invoke-Lic "const r=l.install('$b64Fwd');console.log(JSON.stringify({ok:r.ok,reason:r.reason,tier:r.tier,customer:r.customer}));"
   Write-Host $out

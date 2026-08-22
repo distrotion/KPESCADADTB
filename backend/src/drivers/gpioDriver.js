@@ -142,7 +142,33 @@ class GpioDriver {
   }
 
   // ── อ่าน ─────────────────────────────────────────────────────────────────────
+  // ── tag ข้อมูลระบบ (direction='sys') — ดิสก์ของ partition ที่แอปอยู่ (GB) ──────────
+  //   ไม่แตะ pin/mode เลย → ใช้ได้ทั้ง real (Pi) และ sim (dev บน Mac/Win) · read-only
+  //   cache 30s: fs.statfs เป็น syscall เบา แต่ gpio poll ถี่ (ms) ไม่จำเป็นต้องยิงทุกรอบ
+  async _diskStat() {
+    const now = Date.now();
+    if (this._disk && now - this._disk.ts < 30000) return this._disk;
+    const root = require('path').resolve(__dirname, '..', '..', '..');   // repo root (datalog/data อยู่ partition นี้)
+    const s = await require('fs').promises.statfs(root);
+    const GB = 1024 * 1024 * 1024;
+    this._disk = {
+      ts: now,
+      total: (s.blocks * s.bsize) / GB,
+      free: (s.bavail * s.bsize) / GB,               // เหลือที่ user ใช้ได้จริง (ตรง df Avail)
+      used: ((s.blocks - s.bfree) * s.bsize) / GB,   // ใช้ไปจริง (ตรง df Used)
+    };
+    return this._disk;
+  }
+
   async readTag(tag) {
+    if (tag.direction === 'sys') {
+      try {
+        const d = await this._diskStat();
+        if (tag.sysStat === 'disk_used') return d.used;
+        if (tag.sysStat === 'disk_total') return d.total;
+        return d.free;                               // default = disk_free (พื้นที่เหลือ)
+      } catch (e) { this._lastError = 'statfs: ' + e.message; return null; }
+    }
     if (tag.pin == null) return null;
     // output: คืน "ค่าที่ตั้งไว้" (อ่านขาที่เรากำลังขับด้วย gpioget จะ EBUSY) — ทั้ง 2 โหมด
     if (tag.direction === 'out') {
@@ -165,6 +191,7 @@ class GpioDriver {
   // ── เขียน (output เท่านั้น) ───────────────────────────────────────────────────
   async writeTag(tag, value) {
     if (!this.connected) throw new Error('Not connected');
+    if (tag.direction === 'sys') throw new Error('tag ข้อมูลระบบ (ดิสก์) อ่านอย่างเดียว');
     if (tag.direction !== 'out') throw new Error(`เขียนขา input ไม่ได้ (BCM ${tag.pin})`);
     const v = value ? 1 : 0;
     this._outState.set(tag.pin, v);                          // เก็บ logical
