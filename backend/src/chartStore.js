@@ -90,6 +90,14 @@ class ChartStore {
       ? `ALTER TABLE ${table} ADD COLUMN value_text TEXT`
       : `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS value_text VARCHAR(512)`;
     try { await this.dbManager.query(conn, alter, []); } catch (_) {}   // มีคอลัมน์อยู่แล้ว (sqlite/mysql throw) → ข้าม
+    // index (device, tag, ts) — history() query WHERE (device=? AND tag=?) ... AND ts>=? ORDER BY ts
+    //   ไม่มี index เดิม = full table scan ทุกครั้ง โตขึ้นเรื่อย ๆ ตามอายุ log (retentionDays=0 = ไม่มีเพดาน)
+    //   บล็อก event loop นาน (sqlite driver เป็น sync) ยิ่งมี concurrent history request ยิ่งหนัก — สงสัยเป็นสาเหตุ backend ค้าง/ตาย 2026-08-25
+    const idxName = `idx_${table}_devtagts`;
+    const createIndex = dialect === 'mssql'
+      ? `IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = '${idxName}') CREATE INDEX ${idxName} ON ${table} (device, tag, ts)`
+      : `CREATE INDEX IF NOT EXISTS ${idxName} ON ${table} (device, tag, ts)`;
+    try { await this.dbManager.query(conn, createIndex, []); } catch (_) {}
     this._ready.add(key);
   }
 
