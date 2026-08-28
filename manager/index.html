@@ -34,10 +34,12 @@ header{background:#0d1117;border-bottom:1px solid var(--border);padding:12px 24p
 .proc-dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex-shrink:0;transition:all .3s}
 .proc-dot.on{background:var(--green);box-shadow:0 0 8px #22c55e88}
 .proc-dot.off{background:var(--red)}
+.proc-dot.unknown{background:var(--dim)}
 .card-title{font-weight:700;font-size:15px;flex:1}
 .badge{font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px}
 .badge-on{background:#166534;color:#4ade80}
 .badge-off{background:#450a0a;color:#f87171}
+.badge-unknown{background:#374151;color:#9ca3af}
 
 /* ── Port status row ─────────────────────────────────────────────── */
 .port-row{padding:10px 18px;display:flex;align-items:center;gap:16px;background:#0d1424;border-bottom:1px solid var(--border)}
@@ -45,6 +47,7 @@ header{background:#0d1117;border-bottom:1px solid var(--border);padding:12px 24p
 .port-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);transition:all .3s}
 .port-dot.open{background:var(--green);box-shadow:0 0 6px #22c55e99}
 .port-dot.closed{background:var(--red)}
+.port-dot.unknown{background:var(--dim)}
 .port-pids{font-size:11px;color:var(--dim)}
 .btn-kill{margin-left:auto;padding:4px 14px;background:#7f1d1d;color:#fca5a5;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;transition:background .15s}
 .btn-kill:hover{background:#991b1b}
@@ -80,6 +83,20 @@ button:disabled{opacity:.35;cursor:default}
 .port-status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;transition:all .3s}
 .port-status-dot.open{background:var(--green);box-shadow:0 0 6px #22c55e88}
 .port-status-dot.closed{background:var(--muted)}
+.port-status-dot.unknown{background:var(--dim);opacity:.5}
+
+/* ── Status banners (auth-blocked / live-update-lost) ───────────────── */
+.status-banner{margin:0 24px 14px;padding:14px 16px;border-radius:10px;display:flex;align-items:flex-start;gap:12px;font-size:13px;line-height:1.6}
+.status-banner.warn{background:#2a2110;border:1px solid #78350f}
+.status-banner.info{background:#0d1f2e;border:1px solid #164e63}
+.status-banner .sb-icon{font-size:18px;flex-shrink:0}
+.status-banner .sb-title{font-weight:800;margin-bottom:3px}
+.status-banner.warn .sb-title{color:#fbbf24}
+.status-banner.info .sb-title{color:#67e8f9}
+.status-banner .sb-body{color:var(--dim)}
+.status-banner .sb-body code{background:#00000033;padding:1px 6px;border-radius:4px;color:#e5e7eb;font-size:12px}
+.status-banner .sb-actions{margin-top:8px;display:flex;gap:8px;flex-wrap:wrap}
+.status-banner button{padding:6px 14px;font-size:12px}
 .pid-chip{display:inline-block;background:var(--border);border-radius:4px;padding:1px 7px;font-size:10px;font-family:monospace;margin:0 2px;color:#e5e7eb}
 .kill-btn-sm{padding:3px 12px;background:#7f1d1d;color:#fca5a5;border:none;border-radius:5px;font-size:11px;font-weight:700;cursor:pointer}
 .kill-btn-sm:hover{background:#991b1b}
@@ -209,6 +226,25 @@ button:disabled{opacity:.35;cursor:default}
       <button id="kpe-modal-cancel" onclick="kpeModalClose(false)" style="background:#374151;color:#e5e7eb;border:0;border-radius:7px;padding:8px 16px;font-size:13px;cursor:pointer">ยกเลิก</button>
       <button id="kpe-modal-ok" onclick="kpeModalClose(true)" style="background:#dc2626;color:#fff;border:0;border-radius:7px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer">ยืนยัน</button>
     </div>
+  </div>
+</div>
+
+<!-- Auth-blocked banner — โผล่เมื่อ /api/status โดน 401 (KPE_API_TOKEN เปิดอยู่ + ยังไม่ได้ login) -->
+<div id="auth-banner" class="status-banner warn" style="display:none">
+  <span class="sb-icon">🔐</span>
+  <div style="flex:1">
+    <div class="sb-title">ดึงสถานะไม่ได้ — สถานะการ์ดด้านล่างยังไม่ทราบผลจริง</div>
+    <div class="sb-body" id="auth-banner-body">API token เปิดใช้งานอยู่ · การเข้าหน้านี้จากเครื่องอื่นต้อง login ก่อนถึงจะเห็นสถานะจริง</div>
+    <div class="sb-actions" id="auth-banner-actions"></div>
+  </div>
+</div>
+
+<!-- Live-update-lost banner — โผล่เมื่อ SSE (/api/events) เชื่อมต่อไม่ได้ต่อเนื่อง -->
+<div id="live-banner" class="status-banner info" style="display:none">
+  <span class="sb-icon">📡</span>
+  <div style="flex:1">
+    <div class="sb-title">Live update ขาดการเชื่อมต่อ</div>
+    <div class="sb-body">หน้านี้จะไม่อัปเดตสถานะ/log แบบเรียลไทม์จนกว่าจะเชื่อมต่อได้ใหม่ — กำลังลองเชื่อมต่อใหม่ทุก 3 วินาที (ตัวเลขที่เห็นอาจไม่ใช่ปัจจุบัน)</div>
   </div>
 </div>
 
@@ -760,6 +796,37 @@ function setProc(name, running) {
   badge.textContent = running ? 'ONLINE' : 'OFFLINE';
   btnS.disabled   = running;
   btnT.disabled   = !running;
+}
+
+// ── "ไม่ทราบสถานะ" — ใช้ตอนดึงสถานะไม่ได้ (เช่น 401) แทนที่จะโชว์ OFFLINE มั่ว ๆ ───
+//   ปิดปุ่ม Start/Stop ด้วย (ไม่รู้สถานะจริง สั่งไปเสี่ยงพลาด) จนกว่าจะ login/ดึงสถานะได้ใหม่
+function setProcUnknown(name) {
+  const dot   = document.getElementById('proc-dot-' + name);
+  const badge = document.getElementById('badge-' + name);
+  const btnS  = document.getElementById('btn-start-' + name);
+  const btnT  = document.getElementById('btn-stop-'  + name);
+  if (!dot) return;
+  dot.className   = 'proc-dot unknown';
+  badge.className = 'badge badge-unknown';
+  badge.textContent = 'ไม่ทราบสถานะ';
+  btnS.disabled   = true;
+  btnT.disabled   = true;
+}
+function setPortUnknown(name) {
+  const pdot  = document.getElementById('pdot-'   + name);
+  const ppids = document.getElementById('ppids-'  + name);
+  const plbl  = document.getElementById('plabel-' + name);
+  const pkill = document.getElementById('pkill-'  + name);
+  const bar   = document.getElementById('bar-'    + name);
+  if (!pdot) return;
+  pdot.className = 'port-dot unknown';
+  ppids.textContent = '—';
+  plbl.textContent  = 'ไม่ทราบสถานะ';
+  pkill.disabled    = true;
+  bar.style.background = 'var(--muted)';
+}
+function setAllUnknown() {
+  for (const name of ['backend', 'frontend', 'deploy']) { setProcUnknown(name); setPortUnknown(name); }
 }
 
 // ── Render port status ────────────────────────────────────────────
@@ -1378,8 +1445,39 @@ function applyVersion(v) {
   el.style.display = parts.length ? '' : 'none';
 }
 
+// ── Auth-blocked banner — /api/status ตอบ 401 (KPE_API_TOKEN เปิดอยู่ ยังไม่ login) ──
+//   แยกจาก gateCheck() (ซึ่งเช็คแค่ managerLogin) เพราะ 401 กรณีนี้เกิดได้แม้ managerLogin ปิดอยู่
+let authBlocked = false;
+function hideAuthBanner() { const b = document.getElementById('auth-banner'); if (b) b.style.display = 'none'; }
+function showAuthBanner() {
+  authBlocked = true;
+  setAllUnknown();
+  const body = document.getElementById('auth-banner-body');
+  const actions = document.getElementById('auth-banner-actions');
+  fetch('/api/access-gate').then(r => r.json()).then(g => {
+    if (g.managerLogin) {
+      body.textContent = 'API token เปิดใช้งานอยู่ · เครื่องนี้เปิด login ไว้แล้ว — กด "เข้าสู่ระบบ" เพื่อดูสถานะจริง';
+      actions.innerHTML = '';
+      const btn = document.createElement('button');
+      btn.textContent = '🔓 เข้าสู่ระบบ Manager';
+      btn.style.cssText = 'background:#2563eb;color:#fff;border:0;border-radius:7px;font-weight:700;cursor:pointer';
+      btn.onclick = () => showGateOverlay(true);
+      actions.appendChild(btn);
+    } else {
+      body.innerHTML = 'API token เปิดใช้งานอยู่ แต่เครื่องนี้ยังไม่ได้เปิดระบบ login ของ Manager (ตั้งได้จากหน้าจอเครื่องนี้เอง ใน Settings) — ระหว่างนี้เข้าดูสถานะได้ผ่านหน้าเว็บหลักแทน: <code>http://' + location.hostname + ':&lt;พอร์ต frontend&gt;/mgr/</code> (proxy ผ่าน frontend จะยืนยันตัวตนให้อัตโนมัติ ไม่ต้องมี token)';
+      actions.innerHTML = '';
+    }
+  }).catch(() => {
+    body.textContent = 'API token เปิดใช้งานอยู่ — ลองเข้าผ่านหน้าเว็บหลัก (frontend) แทนที่ path /mgr/ (จะยืนยันตัวตนให้อัตโนมัติ)';
+  });
+  document.getElementById('auth-banner').style.display = 'flex';
+}
+
 // ── Initial load ──────────────────────────────────────────────────
-fetch('/api/status').then(r => r.json()).then(data => {
+fetch('/api/status').then(r => r.json().then(d => ({ status: r.status, d }))).then(({ status, d }) => {
+  if (status === 401) { showAuthBanner(); return; }
+  hideAuthBanner();
+  const data = d;
   applyPorts(data.config);   // ตั้ง label/link/form ตามพอร์ตจริงก่อน
   renderLanUrls(data.lanIps, data.config);   // URL สำหรับเปิดจากเครื่องอื่นใน LAN
   applyVersion(data.version);
@@ -1393,12 +1491,23 @@ fetch('/api/status').then(r => r.json()).then(data => {
       updatePort(Number(port), state.open, state.pids);
     }
   }
-});
+}).catch(() => { /* network error ล้วน ๆ (ไม่ใช่ auth) — ปล่อยการ์ดเป็นค่าเริ่มต้น ไม่ฟันธง */ });
 
 // ── SSE ───────────────────────────────────────────────────────────
 let sse;
+let sseRetries = 0;
+function showLiveBanner(show) {
+  const b = document.getElementById('live-banner');
+  if (b) b.style.display = show ? 'flex' : 'none';
+}
 function connectSSE() {
   sse = new EventSource(gatedUrl('/api/events'));
+
+  sse.onopen = () => {
+    sseRetries = 0;
+    showLiveBanner(false);
+    if (authBlocked) { authBlocked = false; fetch('/api/status').then(r => r.status === 200 ? location.reload() : null).catch(() => {}); }
+  };
 
   sse.onmessage = e => {
     const msg = JSON.parse(e.data);
@@ -1423,6 +1532,9 @@ function connectSSE() {
   };
 
   sse.onerror = () => {
+    sseRetries++;
+    // ให้โอกาสต่อใหม่เร็ว ๆ ก่อนกวนตา — เพิ่งหลุดครั้งแรกไม่ต้องตกใจ (เครือข่ายสะดุดชั่วคราวเกิดได้ปกติ)
+    if (sseRetries >= 2 && !authBlocked) showLiveBanner(true);
     setTimeout(connectSSE, 3000); // reconnect
   };
 }
