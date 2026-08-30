@@ -20,9 +20,23 @@ function mountPlcMem(app, manager, helpers = {}) {
     res.json({ ok: true, config: manager.getConfig(), status: manager.getStatus() });
   });
 
+  // config เปลี่ยนจากหน้าจอได้แล้ว (เพิ่ม/เอา PLC ออก/เริ่ม-หยุดกวาด/แก้ ranges) → audit เหมือน
+  //   mutating route อื่นของ PLCMEM · sig = สรุปสภาพ config ก่อน/หลัง ไม่ log ถ้าไม่มีอะไรเปลี่ยนจริง
+  const cfgSig = (plcs) => plcs
+    .map((p) => `${p.deviceId}[${p.enabled === false ? 'off' : 'on'}]${(p.ranges || []).map((r) => r.name).join('|')}`)
+    .join(' ');
+
   app.put('/api/plcmem', (req, res) => {
+    const before = cfgSig(manager.getConfig().plcs);
     try {
       const config = manager.updateConfig(req.body || {});
+      const after = cfgSig(config.plcs);
+      if (before !== after) {
+        logActivity(req, {
+          category: 'config', action: 'plcmem_config', target: 'plcmem',
+          detail: `${before || '(ว่าง)'} → ${after || '(ว่าง)'}`,
+        });
+      }
       res.json({ ok: true, config });
     } catch (e) {
       res.status(400).json({ ok: false, error: e.message });
