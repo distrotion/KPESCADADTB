@@ -51,7 +51,8 @@ app.use('/api', (req, res, next) => {
   // health = monitor/port-check · hooks = REST trigger (external webhook ไม่มี token → ยกเว้น,
   //   auth ของ hook ใช้ per-script API key ที่ header แทน — ดู /api/hooks/:path ด้านล่าง)
   if (!API_TOKEN || req.path === '/health' || req.path === '/license' || req.path === '/time' || req.path.startsWith('/hooks/')
-      || req.path === '/kpenetwork/directory' || req.path === '/kpenetwork/values') return next();  // /time = peer time-sync (เวลา · ไม่ sensitive) · directory/values ข้าม node = ใช้ requireApiKey แทน (§9.1)
+      || req.path === '/kpenetwork/directory' || req.path === '/kpenetwork/values'
+      || req.path.startsWith('/kpenetwork/plcmem/')) return next();  // /time = peer time-sync (เวลา · ไม่ sensitive) · directory/values/plcmem ข้าม node = ใช้ requireApiKey (checkApiKey) แทน (§9.1 · T8)
   if (_tokenOk(_bearer(req))) return next();
   res.status(401).json({ error: 'unauthorized (API token required)' });
 });
@@ -87,7 +88,7 @@ const _licTimer = setInterval(() => {
     } else if (_engineStoppedByLicense && !nb) {
       _engineStoppedByLicense = false;
       console.log('[LICENSE] valid → start engine');
-      startEngine().then(startServicesOnce);
+      startEngine().then(() => { startServicesOnce(); try { plcMem.start(); } catch (_) {} });   // review #11: startServicesOnce() no-ops after first boot (its own _servicesStarted guard) so plcMem.start() must be called explicitly to undo stopEngine()'s plcMem.stop()
     }
   } catch (_) {}
 }, 10000);
@@ -116,7 +117,11 @@ if (USB_MODE) {
 // blocked รวม: mode B = ตาม USB master key (เสียบ/ไม่เสียบ) · mode A = ตาม disk license
 function blockedNow() { return USB_MODE ? (license.isEnforced() && !usbOk) : LIC.blocked; }
 // DLC อนุญาตไหม: mode B = features จาก USB · mode A = จาก disk license
-function allowFeature(f) { return USB_MODE ? (!license.isEnforced() || usbFeatures.has(f)) : license.featureAllowed(f); }
+//   chem-store: ย้ายไป soi8-superapp แล้ว เลิกใช้ถาวร — ปิดตรงนี้จุดเดียว (ไม่สน dev-bypass/license เดิม) กัน DB/tag/nav โผล่มาอีก
+function allowFeature(f) {
+  if (f === 'chem-store') return false;
+  return USB_MODE ? (!license.isEnforced() || usbFeatures.has(f)) : license.featureAllowed(f);
+}
 function gateInfo() { return USB_MODE ? { reason: usbOk ? 'valid' : ('usb-' + usbReason), machineId: license.machineIdShort() } : { reason: LIC.reason, machineId: LIC.machineId }; }
 
 app.get('/api/license', (_req, res) => res.json(USB_MODE
@@ -242,6 +247,19 @@ const lineRecorder = new LineRecorderManager({ tagEngine: engine, dbManager, que
 lineRecorder._onViolation = (line, ev, viol) => { try { broadcast({ type: 'line_spec_violation', line, station: ev.station, carrier: ev.carrier, viol, t: Date.now() }); } catch (_) {} };
 engine.setLineRecorder(lineRecorder);   // device type 'lr' อ่าน job field ผ่าน LR manager
 mountLineRecorder(app, lineRecorder);
+
+// PLCMEM (PLC Memory Pipeline · docs/PLCMEM-BLUEPRINT.md) — sweep PLC D/ZR ล้าน register → buffer(pg) → UI diff/write/snapshot
+//   ต่อ PLC เสมอ (§0 กติกาเหล็ก) · ไม่แตะ tag/poll เดิม · additive ล้วน
+const PlcMemManager = require('./plcMem/manager');
+const { mountPlcMem } = require('./plcMem/routes');
+const { AREAS: PLCMEM_AREAS } = require('./plcMem/constants');
+const { validateBuffer2Rows } = require('./plcMem/validateBuffer2');   // ใช้ร่วมกับ routes.js (local PUT) กัน validation สองที่ไม่ตรงกัน
+const plcMem = new PlcMemManager({ engine, dbManager, onStatus: (deviceId, state) => {
+  // §T3: สถานะ sweep ไปหา dashboard client ปกติ (ไม่ใช่ KPENETWORK peer — broadcast() ข้าม ws._kpe อยู่แล้ว)
+  broadcast({ type: 'plcmem_status', deviceId, state });
+} });
+// resolveActor/logActivity เป็น function declaration (hoisted) — ประกาศจริงอยู่ด้านล่างของไฟล์นี้ (ปลอดภัยเพราะเรียกใช้ตอน request จริง ไม่ใช่ตอนนี้)
+mountPlcMem(app, plcMem, { resolveActor, logActivity });
 
 // §F DB storage (TPKstock_Prod/Test) — attach dbManager + init (db mode เท่านั้น · file mode ข้ามทันที) · best-effort ตอน boot
 stockManager.attachDb(dbManager);
@@ -388,6 +406,7 @@ const dbBackup = new DbBackup(dbManager);
 // KPENETWORK — Modbus TCP server เผยแพร่ tag ที่แชร์ให้ KPE node อื่น (§55 · P1 publish+directory)
 const KpeNetworkServer = require('./kpenetworkServer');
 const kpeNet = new KpeNetworkServer(engine);
+kpeNet._plcMem = plcMem;   // §T8: advertise field "plcmem" ใน getDirectory() (plcMem สร้างไว้ก่อนหน้านี้แล้ว)
 // log การเขียนกลับจาก peer (§37 · two-way P4)
 kpeNet.onPeerWrite = (deviceId, tagId, value) => {
   try { activityLog.log({ category: 'tag', action: 'write', user: 'kpenet', target: `${deviceId}/${tagId}`, detail: `= ${value}`, result: 'ok' }); } catch (_) {}
@@ -780,6 +799,41 @@ app.get('/api/kpenetwork/directory', (req, res) => {
 app.get('/api/kpenetwork/values', (req, res) => {
   if (!kpeNet.checkApiKey(req.get('x-api-key'))) return res.status(401).json({ ok: false, error: 'invalid api key' });
   res.json({ ok: true, values: kpeNet.getRestValues() });
+});
+// ── T8: PLCMEM ข้าม node (KPENETWORK) — กติกาเหล็ก: อ่าน/เขียนผ่าน plcMem store เท่านั้น ห้ามเรียก driver ────
+//   auth เหมือน directory/values (checkApiKey) · remote UI (T7 "remote PLC" mode) เรียกตรงมาที่นี่ (cross-origin, cors เปิดอยู่แล้ว)
+app.get('/api/kpenetwork/plcmem/:dev/buffer', async (req, res) => {
+  if (!kpeNet.checkApiKey(req.get('x-api-key'))) return res.status(401).json({ ok: false, error: 'invalid api key' });
+  const dev = req.params.dev;
+  const plc = plcMem.getConfig().plcs.find((p) => p.deviceId === dev);
+  if (!plc) return res.status(404).json({ ok: false, error: `plc "${dev}" ไม่มีใน config` });
+  try {
+    const area = String(req.query.area || '').toUpperCase();
+    if (!PLCMEM_AREAS.includes(area)) return res.status(400).json({ ok: false, error: 'area ไม่ถูกต้อง' });
+    const buf = req.query.buf === '2' ? 2 : 1;
+    const from = req.query.from != null && req.query.from !== '' ? Number(req.query.from) : null;
+    const to = req.query.to != null && req.query.to !== '' ? Number(req.query.to) : null;
+    const nonzero = req.query.nonzero === '1' || req.query.nonzero === 'true';
+    const limit = Math.min(Math.max(Number(req.query.limit) || 1000, 1), 5000);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    const rows = await plcMem.store.readRange(plc.bufferConn, plc.deviceId, buf, area, from, to, { nonzero, limit, offset });
+    res.json({ ok: true, rows });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+app.post('/api/kpenetwork/plcmem/:dev/buffer2', async (req, res) => {
+  if (!kpeNet.checkApiKey(req.get('x-api-key'))) return res.status(401).json({ ok: false, error: 'invalid api key' });
+  const dev = req.params.dev;
+  const plc = plcMem.getConfig().plcs.find((p) => p.deviceId === dev);
+  if (!plc) return res.status(404).json({ ok: false, error: `plc "${dev}" ไม่มีใน config` });
+  try {
+    const { actor, actorType, ip } = resolveActor(req);   // §C8 — peer ส่ง x-kpe-user มาด้วยได้ (แทนชื่อ user ต้นทาง) ไม่บังคับ
+    const rows = validateBuffer2Rows(req.body && req.body.values, actor || 'kpenetwork-peer');
+    const result = await plcMem.store.upsertBatch(plc.bufferConn, plc.deviceId, 2, rows);
+    await plcMem.store.journal(plc.bufferConn, {
+      plc: dev, action: 'buffer2_write_remote', detail: `${rows.length} address (kpenetwork peer)`, actor, actorType, ip,
+    });
+    res.json({ ok: true, upserted: result.upserted });
+  } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 // peer-directory = UI picker: ดึงรายการ tag ที่ "ต้นทาง" (peer) แชร์ ตาม connection ที่กรอกในฟอร์ม device
 //   (backend proxy ให้ frontend — เพราะ frontend ยิงข้ามเครื่อง/อ่าน Modbus เองไม่ได้) · ต้อง token (admin)
@@ -2691,7 +2745,10 @@ const HOST = _P.backendHost;
 // engine + services lifecycle — แยกเป็นฟังก์ชันเพื่อให้ USB poller (mode B) start/stop ได้ระหว่างรัน
 let _enginePolling = false, _servicesStarted = false;
 async function startEngine() { if (_enginePolling) return; try { await engine.start(); _enginePolling = true; } catch (e) { console.error('[engine] start:', e && e.message); } }
-function stopEngine() { if (!_enginePolling) return; try { engine.stop(); } catch (_) {} _enginePolling = false; }   // หยุด poll device = หยุดคุมงาน (instant block)
+// review finding #11: plcMem ใช้ driver แยกของตัวเองต่อ PLC (dedicated socket) — ไม่ได้อยู่ใน
+//   engine.drivers เลย engine.stop() เดิมไม่แตะ ทำให้ license/USB instant-block ตัด engine ปกติ
+//   แต่ plcMem ยังต่อ+กวาด/เขียน PLC ต่อได้เหมือนไม่มีอะไรเกิดขึ้น (ช่องโหว่ security enforcement)
+function stopEngine() { if (!_enginePolling) return; try { engine.stop(); } catch (_) {} try { plcMem.stop(); } catch (_) {} _enginePolling = false; }   // หยุด poll device = หยุดคุมงาน (instant block)
 function startServicesOnce() {
   if (_servicesStarted) return; _servicesStarted = true;
   scriptEngine.start();
@@ -2704,6 +2761,7 @@ function startServicesOnce() {
   try { lineRecorder.start(); } catch (e) { console.error('[lineRecorder] start:', e && e.message); }
   try { dbBackup.start(); } catch (_) {}
   try { kpeNet.start(); } catch (e) { console.error('[KPENETWORK] start:', e && e.message); }
+  try { plcMem.start(); } catch (e) { console.error('[plcmem] start:', e && e.message); }
 }
 
 // License gated → ไม่สตาร์ท engine/services · แค่ listen ให้ /api/license + /health + 403 ตอบได้ (recover ผ่าน Manager/USB)
@@ -2727,7 +2785,8 @@ function startServicesOnce() {
   if (USB_MODE) {
     const iv = setInterval(() => {
       if (!_usbCheck()) return;   // สถานะไม่เปลี่ยน
-      if (usbOk) { console.log('[LICENSE-USB] master key inserted → start engine'); startEngine().then(startServicesOnce); }
+      // review #11: startServicesOnce() no-ops after first boot (its own _servicesStarted guard) — plcMem.start() must be called explicitly to undo stopEngine()'s plcMem.stop()
+      if (usbOk) { console.log('[LICENSE-USB] master key inserted → start engine'); startEngine().then(() => { startServicesOnce(); try { plcMem.start(); } catch (_) {} }); }
       else { console.error('[LICENSE-USB] master key REMOVED → instant block (engine stop · /api 403)'); stopEngine(); }
     }, 2000);
     if (iv && typeof iv.unref === 'function') iv.unref();
@@ -2747,6 +2806,7 @@ function gracefulShutdown(sig) {
   try { queryBufferManager.stop(); } catch (_) {}
   try { engine.stop(); } catch (_) {}
   try { kpeNet && kpeNet.stop && kpeNet.stop(); } catch (_) {}
+  try { plcMem && plcMem.stop && plcMem.stop(); } catch (_) {}
   process.exit(0);
 }
 process.on('SIGINT',  () => gracefulShutdown('SIGINT'));

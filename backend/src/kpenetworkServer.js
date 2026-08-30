@@ -54,6 +54,7 @@ class KpeNetworkServer {
     this._wsFlushTimer = null;
     this.path = csv.resolveConfig('kpenetwork.json', path.join(__dirname, 'config', 'kpenetwork.json'));
     this.config = { ...DEFAULT };
+    this._plcMem = null;   // §T8: ref ไปยัง PlcMemManager (set จาก server.js หลังสร้าง) — advertise field plcmem ใน directory
     this._load();
   }
 
@@ -292,7 +293,15 @@ class KpeNetworkServer {
   rebuild() { if (this.config.enabled && this.server) this._build(); }
 
   // ── control plane / REST ─────────────────────────────────────────────────────
-  getDirectory() { return { nodeId: this.config.nodeId || '', entries: this.entries }; }
+  // §T8: plcmem = field ใหม่ระดับบนสุด (ไม่แตะ entries[]) — peer เก่า (ยังไม่มี PLCMEM) ignore field แปลกนี้เอง
+  getDirectory() {
+    const dir = { nodeId: this.config.nodeId || '', entries: this.entries };
+    if (this._plcMem) {
+      try { dir.plcmem = this._plcMem.getConfig().plcs.map((p) => ({ deviceId: p.deviceId, ranges: p.ranges })); }
+      catch (_) { dir.plcmem = []; }
+    }
+    return dir;
+  }
 
   // ค่าปัจจุบันของ tag ที่แชร์แบบ REST transport (area:'rest' เช่น STRING) — subscriber poll ผ่าน REST
   //   คืน { "<device>/<tag>": value } · อ่านสดจาก engine (อ่านได้ทั้ง sim/virtual/จริง)
