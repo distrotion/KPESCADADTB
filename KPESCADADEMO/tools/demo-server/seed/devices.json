@@ -1,0 +1,201 @@
+{
+  "devices": [
+    {
+      "id": "DEMO01",
+      "name": "Demo PLC (virtual)",
+      "type": "mc_protocol",
+      "enabled": true,
+      "connection": {
+        "host": "127.0.0.1",
+        "port": 0,
+        "transport": "tcp",
+        "frameType": "3E"
+      },
+      "pollInterval": 1000,
+      "tags": [
+        {
+          "id": "temp",
+          "name": "อุณหภูมิ",
+          "address": "D0",
+          "dataType": "INT",
+          "unit": "°C"
+        },
+        {
+          "id": "pressure",
+          "name": "ความดัน",
+          "address": "D1",
+          "dataType": "INT",
+          "unit": "kPa"
+        },
+        {
+          "id": "level",
+          "name": "ระดับน้ำ",
+          "address": "D2",
+          "dataType": "INT",
+          "unit": "%"
+        },
+        {
+          "id": "speed",
+          "name": "ความเร็วสายพาน",
+          "address": "D3",
+          "dataType": "INT",
+          "unit": "rpm"
+        },
+        {
+          "id": "counter",
+          "name": "ตัวนับชิ้นงาน",
+          "address": "D100",
+          "dataType": "INT",
+          "unit": "pcs"
+        },
+        {
+          "id": "recipe",
+          "name": "หมายเลขสูตร",
+          "address": "ZR0",
+          "dataType": "INT",
+          "unit": ""
+        },
+        {
+          "id": "pk_speed",
+          "name": "ความเร็วไลน์แพ็ค",
+          "address": "D200",
+          "dataType": "INT",
+          "unit": "ขวด/นาที"
+        },
+        {
+          "id": "pk_filled",
+          "name": "บรรจุสะสม",
+          "address": "D201",
+          "dataType": "INT",
+          "unit": "ขวด"
+        },
+        {
+          "id": "pk_reject",
+          "name": "คัดออก (ตรวจสอบ)",
+          "address": "D202",
+          "dataType": "INT",
+          "unit": "ขวด"
+        },
+        {
+          "id": "pk_cartons",
+          "name": "กล่องสะสม",
+          "address": "D203",
+          "dataType": "INT",
+          "unit": "กล่อง"
+        },
+        {
+          "id": "pk_pallets",
+          "name": "พาเลทสะสม",
+          "address": "D204",
+          "dataType": "INT",
+          "unit": "พาเลท"
+        },
+        {
+          "id": "pk_hopper",
+          "name": "ถังพักขวดเปล่า",
+          "address": "D205",
+          "dataType": "INT",
+          "unit": "%"
+        },
+        {
+          "id": "pk_st_unscramble",
+          "name": "สถานี unscramble",
+          "address": "D210",
+          "dataType": "INT",
+          "unit": ""
+        },
+        {
+          "id": "pk_st_fill",
+          "name": "สถานี fill",
+          "address": "D211",
+          "dataType": "INT",
+          "unit": ""
+        },
+        {
+          "id": "pk_st_cap",
+          "name": "สถานี cap",
+          "address": "D212",
+          "dataType": "INT",
+          "unit": ""
+        },
+        {
+          "id": "pk_st_inspect",
+          "name": "สถานี inspect",
+          "address": "D213",
+          "dataType": "INT",
+          "unit": ""
+        },
+        {
+          "id": "pk_st_label",
+          "name": "สถานี label",
+          "address": "D214",
+          "dataType": "INT",
+          "unit": ""
+        },
+        {
+          "id": "pk_st_carton",
+          "name": "สถานี carton",
+          "address": "D215",
+          "dataType": "INT",
+          "unit": ""
+        },
+        {
+          "id": "pk_st_casepack",
+          "name": "สถานี casepack",
+          "address": "D216",
+          "dataType": "INT",
+          "unit": ""
+        },
+        {
+          "id": "pk_st_palletize",
+          "name": "สถานี palletize",
+          "address": "D217",
+          "dataType": "INT",
+          "unit": ""
+        },
+        {
+          "id": "lr_pos1",
+          "name": "CHEM1 บ่อ 1 (carrier)",
+          "address": "D220",
+          "dataType": "INT",
+          "unit": ""
+        },
+        {
+          "id": "lr_pos2",
+          "name": "CHEM1 บ่อ 2 (carrier)",
+          "address": "D221",
+          "dataType": "INT",
+          "unit": ""
+        },
+        {
+          "id": "lr_pos3",
+          "name": "CHEM1 บ่อ 3 (carrier)",
+          "address": "D222",
+          "dataType": "INT",
+          "unit": ""
+        },
+        {
+          "id": "lr_pos4",
+          "name": "CHEM1 บ่อ 4 (carrier)",
+          "address": "D223",
+          "dataType": "INT",
+          "unit": ""
+        },
+        {
+          "id": "lr_pos5",
+          "name": "CHEM1 บ่อ 5 (carrier)",
+          "address": "D224",
+          "dataType": "INT",
+          "unit": ""
+        },
+        {
+          "id": "lr_pos6",
+          "name": "CHEM1 บ่อ 6 (carrier)",
+          "address": "D225",
+          "dataType": "INT",
+          "unit": ""
+        }
+      ]
+    }
+  ]
+}

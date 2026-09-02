@@ -447,7 +447,16 @@ process.on('unhandledRejection', (reason) => {
 process.on('uncaughtException', (err) => {
   console.error('[uncaughtException]', err && err.stack ? err.stack : err);
   _logSysError('uncaughtException', err && err.message ? err.message : String(err));
-  // ไม่ exit — ให้ SCADA ทำงานต่อ (ไม่มี supervisor respawn ตอนนี้) · ดู AUDIT C6/Phase2
+  // ข้อยกเว้นเดียวที่ต้อง exit: bind พอร์ตไม่ได้ (EADDRINUSE ฯลฯ) — backend ที่ไม่มี API/WS ใช้งานไม่ได้เลย
+  //   ปล่อยไว้จะได้ zombie ที่ยัง poll PLC + กินหน่วยความจำ แต่ไม่มีใครเรียกถึง และซ่อนสาเหตุจริงจากคนดูแล
+  //   (เจอจริงตอนรันหลาย instance บนเครื่องเดียว — พอร์ตชนแล้วค้างสะสมทุกรอบ start)
+  //   ⚠️ ต้องดักที่นี่ ไม่ใช่แค่ server.on('error'): Node เวอร์ชันนี้ setupListenHandle "throw" ผ่าน
+  //      nextTick (ดู stack: processTicksAndRejections) ไม่ได้ emit 'error' → listener บน server ไม่ทำงาน
+  if (err && err.syscall === 'listen') {
+    console.error(`[backend] listen ล้มเหลว → ออก (${err.code || ''} ${err.address || ''}:${err.port || ''})`);
+    process.exit(1);
+  }
+  // นอกนั้นไม่ exit — ให้ SCADA ทำงานต่อ (ไม่มี supervisor respawn ตอนนี้) · ดู AUDIT C6/Phase2
 });
 // ปิดแบบ graceful (service stop/restart) → flush datalog buffer ที่ค้าง (กัน sample ≤5s หาย) แล้วออก
 for (const sig of ['SIGTERM', 'SIGINT']) {
@@ -618,13 +627,30 @@ app.all('/api/vision/proxy/:id', (req, res) => {
 
 // ── Serial: list พอร์ตที่มีในเครื่อง (ให้ UI เลือกตอนตั้ง serial_port/serial_bridge) ──
 //   คืน "array ล้วน" ตาม contract เดิมของ frontend _getSerialPorts (jsonDecode as List)
+//   byId = พาธใน /dev/serial/by-id ที่ผูกกับ serial number ของตัว adapter — ไม่สลับตอนรีบูต
+//   ต่างจาก /dev/ttyUSB<n> ที่เรียงตามลำดับที่ kernel เจอ (เสียบ 4 ตัว = สลับกันได้ทุกครั้งที่บูต
+//   แล้วข้อมูลจะเข้าผิดเครื่องแบบเงียบ ๆ) · ไม่ใช่ Linux/ไม่มีโฟลเดอร์นี้ → คืน '' เฉย ๆ
+function _serialByIdMap() {
+  const map = {};
+  const dir = '/dev/serial/by-id';
+  let names;
+  try { names = fs.readdirSync(dir); } catch (_) { return map; }
+  for (const name of names) {
+    const link = path.join(dir, name);
+    try { map[fs.realpathSync(link)] = link; } catch (_) { /* symlink ค้าง — ข้าม */ }
+  }
+  return map;
+}
+
 app.get('/api/serial-ports', async (req, res) => {
   try {
     const { SerialPort } = require('serialport');
     const ports = await SerialPort.list();
+    const byId = _serialByIdMap();
     res.json(ports.map((p) => ({
       path: p.path, manufacturer: p.manufacturer || '', serialNumber: p.serialNumber || '',
       vendorId: p.vendorId || '', productId: p.productId || '', pnpId: p.pnpId || '',
+      byId: byId[p.path] || '',
     })));
   } catch (e) { res.json([]); }
 });
@@ -2770,7 +2796,27 @@ function startServicesOnce() {
   if (!USB_MODE) { try { const lk = await license.acquireInstanceLock(); if (!lk.held) console.error(`[LICENSE] ใบนี้ถูกใช้โดย instance อื่นบนเครื่องนี้แล้ว (lock port ${lk.port}) → backend gated (license-in-use)`); LIC = licenseState(); } catch (_) {} }
   const gated = blockedNow();
   if (!gated) { await startEngine(); startServicesOnce(); }
+  // bind ไม่ได้ = backend ใช้งานไม่ได้เลย (ไม่มี API/WS ให้ใคร) → ต้องออกทันที
+  //   ถ้าปล่อยให้ตกไปที่ process.on('uncaughtException') ด้านบน (ซึ่งตั้งใจ "ไม่ exit" เพื่อให้ SCADA
+  //   ในโรงงานรอดจาก error จร ๆ) จะได้ zombie ที่ยัง poll PLC + กินหน่วยความจำไปเรื่อย ๆ แต่ไม่มีใคร
+  //   เรียกถึง — เจอจริงตอนรันหลาย instance บนเครื่องเดียว (demo server) พอร์ตชนแล้วค้างสะสมทุกรอบ
+  //   หมายเหตุ: มี listener 'error' บน server แล้ว Node จะไม่ throw ต่อ จึงไม่ชนกับ handler ตัวนั้น
+  let _listening = false;
+  server.on('error', (err) => {
+    if (_listening) {   // ทำงานอยู่แล้ว error ทีหลัง = ไม่ฆ่าโรงงานทิ้ง แค่ log (คงเจตนาเดิม)
+      console.error('[backend] server error:', err && err.message ? err.message : err);
+      _logSysError('server', err && err.message ? err.message : String(err));
+      return;
+    }
+    const why = err && err.code === 'EADDRINUSE'
+      ? `พอร์ต ${PORT} ถูกใช้อยู่แล้ว (instance อื่นรันอยู่?)`
+      : (err && err.message) || String(err);
+    console.error(`[backend] listen ${HOST}:${PORT} ล้มเหลว → ออก: ${why}`);
+    try { activityLog.log({ category: 'system', action: 'service_start', target: 'backend', detail: `listen failed: ${why}`, result: 'fail' }); } catch (_) {}
+    process.exit(1);
+  });
   server.listen(PORT, HOST, () => {
+    _listening = true;
     console.log(`KPE SCADA Backend running on ${HOST}:${PORT}`);
     console.log(`WebSocket: ws://${HOST}:${PORT}`);
     console.log(`REST API:  http://${HOST}:${PORT}/api`);

@@ -1,0 +1,251 @@
+{
+  "line": "CHEM1",
+  "label": "Chem1",
+  "enabled": true,
+  "source": {
+    "mode": "array",
+    "storeDb": "",
+    "positions": [
+      {
+        "pos": 1,
+        "station": "101",
+        "paramTags": {}
+      },
+      {
+        "pos": 2,
+        "station": "102",
+        "paramTags": {}
+      },
+      {
+        "pos": 3,
+        "station": "102",
+        "paramTags": {}
+      },
+      {
+        "pos": 4,
+        "station": "103",
+        "paramTags": {}
+      },
+      {
+        "pos": 5,
+        "station": "103",
+        "paramTags": {}
+      },
+      {
+        "pos": 6,
+        "station": "104",
+        "paramTags": {}
+      }
+    ]
+  },
+  "decode": {
+    "eventType": 0,
+    "stationCode": 1,
+    "carrier": 2,
+    "dateKey": 3,
+    "enterTime": 4,
+    "exitTime": 5
+  },
+  "events": {
+    "ENTER": [
+      1
+    ],
+    "STEP": [
+      2
+    ],
+    "EXIT": [
+      9
+    ],
+    "STAGE": []
+  },
+  "lanes": {},
+  "stations": {
+    "101": {
+      "name": "LOAD",
+      "seq": 1
+    },
+    "102": {
+      "name": "DEGREASE",
+      "seq": 2
+    },
+    "103": {
+      "name": "PLATE",
+      "seq": 3
+    },
+    "104": {
+      "name": "UNLOAD",
+      "seq": 4,
+      "finish": true
+    }
+  },
+  "fields": [
+    {
+      "key": "barcode",
+      "label": "Barcode",
+      "type": "number",
+      "unit": "",
+      "decimals": 0,
+      "scope": "job",
+      "station": null,
+      "stations": [],
+      "show": "last",
+      "source": {},
+      "tag": {},
+      "spec": {
+        "mode": "minmax",
+        "min": null,
+        "max": null,
+        "minTag": null,
+        "maxTag": null,
+        "refTag": null,
+        "minOff": null,
+        "maxOff": null
+      },
+      "track": {
+        "minMax": false,
+        "summary": "last",
+        "graph": false
+      },
+      "display": {
+        "table": true,
+        "mimic": false,
+        "report": false,
+        "order": 0
+      }
+    },
+    {
+      "key": "temp",
+      "label": "Temp",
+      "type": "number",
+      "unit": "C",
+      "decimals": 1,
+      "scope": "step",
+      "station": null,
+      "stations": [],
+      "show": "last",
+      "source": {},
+      "tag": {},
+      "spec": {
+        "mode": "minmax",
+        "min": 55,
+        "max": 70,
+        "minTag": null,
+        "maxTag": null,
+        "refTag": null,
+        "minOff": null,
+        "maxOff": null
+      },
+      "track": {
+        "minMax": true,
+        "summary": "mid",
+        "graph": false
+      },
+      "display": {
+        "table": true,
+        "mimic": false,
+        "report": false,
+        "order": 0
+      }
+    },
+    {
+      "key": "thickness",
+      "label": "ความหนา",
+      "type": "number",
+      "unit": "um",
+      "decimals": 2,
+      "scope": "measure",
+      "station": null,
+      "stations": [
+        "103"
+      ],
+      "show": "last",
+      "source": {},
+      "tag": {},
+      "spec": {
+        "mode": "minmax",
+        "min": 10,
+        "max": 15,
+        "minTag": null,
+        "maxTag": null,
+        "refTag": null,
+        "minOff": null,
+        "maxOff": null
+      },
+      "track": {
+        "minMax": false,
+        "summary": "last",
+        "graph": false
+      },
+      "display": {
+        "table": true,
+        "mimic": false,
+        "report": false,
+        "order": 0
+      }
+    },
+    {
+      "key": "ph",
+      "label": "pH",
+      "type": "number",
+      "unit": "",
+      "decimals": 1,
+      "scope": "measure",
+      "station": null,
+      "stations": [],
+      "show": "last",
+      "source": {},
+      "tag": {},
+      "spec": {
+        "mode": "minmax",
+        "min": null,
+        "max": null,
+        "minTag": null,
+        "maxTag": null,
+        "refTag": null,
+        "minOff": null,
+        "maxOff": null
+      },
+      "track": {
+        "minMax": false,
+        "summary": "last",
+        "graph": false
+      },
+      "display": {
+        "table": true,
+        "mimic": false,
+        "report": false,
+        "order": 0
+      }
+    },
+    {
+      "key": "batch",
+      "label": "Lot (batch)",
+      "scope": "job",
+      "type": "text",
+      "source": {
+        "kind": "manual"
+      },
+      "tag": {}
+    },
+    {
+      "key": "partname",
+      "label": "Part name",
+      "scope": "job",
+      "type": "text",
+      "source": {
+        "kind": "manual"
+      },
+      "tag": {}
+    }
+  ],
+  "setNotes": {},
+  "measure": {
+    "actorMode": "list",
+    "actors": [],
+    "acceptWhenNotInLine": true,
+    "graphAgg": "last",
+    "graphJobs": 200,
+    "graphX": "batch"
+  },
+  "_file": "CHEM1.json"
+}

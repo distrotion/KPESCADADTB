@@ -1,0 +1,24 @@
+{
+  "scripts": [
+    {
+      "id": "script_1780479460479",
+      "name": "dtest",
+      "enabled": false,
+      "trigger": {
+        "type": "interval",
+        "intervalMs": 1000
+      },
+      "code": "function getRandomIntInclusive(min, max) {\n  const minCeiled = Math.ceil(min);\n  const maxFloored = Math.floor(max);\n  return Math.floor(Math.random() * (maxFloored - minCeiled + 1)) + minCeiled; \n}\nsetTag('modbustcptest', 'H01', getRandomIntInclusive(90, 100));"
+    },
+    {
+      "id": "script_1780499035044",
+      "name": "mtest",
+      "enabled": false,
+      "trigger": {
+        "type": "interval",
+        "intervalMs": 1000
+      },
+      "code": "function getRandomIntInclusive(min, max) {\n  const minCeiled = Math.ceil(min);\n  const maxFloored = Math.floor(max);\n  return Math.floor(Math.random() * (maxFloored - minCeiled + 1)) + minCeiled; \n}\nsetTag('test1', 'D1', getRandomIntInclusive(1, 10));"
+    }
+  ]
+}

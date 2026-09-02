@@ -1,0 +1,22 @@
+# render.yaml — blueprint ของ backend demo (Render)
+#   ใช้: Render → New → Blueprint → เลือก repo KPESCADADEMO → รับ blueprint นี้
+#   frontend ไม่อยู่ที่นี่ (static ขึ้น Cloudflare Pages) — deploy คนละที่ตาม pattern เดียวกับ CMS
+#
+#   ⚠️ free tier จะ sleep เมื่อไม่มีคนเข้า ~15 นาที · ตื่นครั้งแรกช้า ~30-60 วิ (ค่าจะเริ่มวิ่งใหม่)
+#      ดิสก์เป็น ephemeral โดยตั้งใจ — redeploy/restart = กลับ golden state เอง ไม่ต้องมี cron reset
+services:
+  - type: web
+    name: kpe-scada-demo-api
+    runtime: node
+    plan: free
+    region: singapore                 # ใกล้ไทยสุด — latency ของ WebSocket realtime สำคัญกับ demo
+    buildCommand: cd backend && npm install --omit=dev
+    startCommand: node tools/demo-server/cloud/start-cloud.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: KPE_DATA_DIR
+        value: /tmp/kpe-demo-data     # ephemeral = รีเซ็ตเองทุก deploy (ตรงกับเจตนา demo)
+      - key: DEMO_VPLC_PORT
+        value: "6400"                 # ภายใน service เท่านั้น ไม่เปิดออกเน็ต

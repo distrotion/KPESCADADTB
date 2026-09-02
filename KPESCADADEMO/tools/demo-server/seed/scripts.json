@@ -1,0 +1,24 @@
+{
+  "scripts": [
+    {
+      "id": "script_demo_animate",
+      "name": "demo animate (จำลองค่าโรงงานให้วิ่ง)",
+      "enabled": true,
+      "trigger": {
+        "type": "interval",
+        "intervalMs": 1000
+      },
+      "code": "// จำลองค่าจริงของโรงงานให้ dashboard มีชีวิต — เขียนลง virtual PLC ผ่าน writeTag\n// stateless: คำนวณจากเวลาล้วน ๆ (restart แล้วเนียนต่อ ไม่กระโดด)\nconst t = Date.now() / 1000;\nconst r = (a) => Math.round(a);\n\n// อุณหภูมิ: แกว่งช้า 42-78°C + สั่นเล็กน้อย\nwriteTag('DEMO01', 'temp', r(60 + 18 * Math.sin(t / 8) + (Math.random() - 0.5) * 3));\n// ความดัน: คลื่นคนละจังหวะ 340-460 kPa\nwriteTag('DEMO01', 'pressure', r(400 + 60 * Math.sin(t / 13 + 1.3) + (Math.random() - 0.5) * 8));\n// ระดับถัง: เติม 2 นาที → ระบาย 2 นาที (สามเหลี่ยม 0-100%)\nconst cyc = (t % 240) / 240;\nwriteTag('DEMO01', 'level', r(cyc < 0.5 ? cyc * 200 : (1 - cyc) * 200));\n// ความเร็วสายพาน: แกว่งรอบ 1350 rpm\nwriteTag('DEMO01', 'speed', r(1350 + 120 * Math.sin(t / 21)));\n// ตัวนับชิ้นงาน: +1 ทุกวินาที (วนที่ 60000 กันเกิน UINT16)\nconst c = tag('DEMO01', 'counter');\nwriteTag('DEMO01', 'counter', ((c == null ? 0 : c) + 1) % 60000);\n// สูตรผลิต: สลับ 1-5 ทุก 5 นาที\nwriteTag('DEMO01', 'recipe', Math.floor(t / 300) % 5 + 1);"
+    },
+    {
+      "id": "script_demo_packing",
+      "name": "demo packing line (จำลองสายการบรรจุ)",
+      "enabled": true,
+      "trigger": {
+        "type": "interval",
+        "intervalMs": 1000
+      },
+      "code": "// จำลองสายการบรรจุ (packaging line) ตามขั้นตอนมาตรฐาน 8 สถานี:\n// จัดเรียงขวด → นับ/บรรจุ → ปิดฝา → ตรวจสอบ → ติดฉลาก → บรรจุกล่อง → หีบห่อ → พาเลท\n// มี fault สุ่ม: ทุก ~2 นาที บางรอบมี 1 สถานีหยุด ~12 วิ → ทั้งไลน์หยุด (เหมือนไลน์จริงที่ block กัน)\nconst t = Date.now() / 1000;\nconst r = Math.round;\nconst stations = ['unscramble','fill','cap','inspect','label','carton','casepack','palletize'];\nconst cyc = Math.floor(t / 120);\nconst h = (cyc * 7919) % 23;                       // hash รอบ — บางรอบไม่มี fault\nconst faultIdx = h < 8 ? h : -1;\nconst inFault = faultIdx >= 0 && (t % 120) < 12;\nstations.forEach((s, i) => writeTag('DEMO01', 'pk_st_' + s, inFault && i === faultIdx ? 0 : 1));\n// ความเร็วไลน์: fault = 0 · ปกติแกว่งรอบ 80 ขวด/นาที\nconst speed = inFault ? 0 : r(80 + 10 * Math.sin(t / 17) + (Math.random() - 0.5) * 4);\nwriteTag('DEMO01', 'pk_speed', speed);\n// ยอดสะสม: บรรจุเพิ่มตามความเร็ว (สคริปต์รันทุก 1 วิ → speed/60 ขวดต่อรอบ เศษใช้สุ่มปัด)\nconst filled = tag('DEMO01', 'pk_filled') || 0;\nconst whole = Math.floor(speed / 60), frac = speed / 60 - whole;\nconst add = whole + (Math.random() < frac ? 1 : 0);\nconst nf = (filled + add) % 60000;\nwriteTag('DEMO01', 'pk_filled', nf);\n// คัดออกจากจุดตรวจสอบ ~0.2% (สอดคล้อง accuracy >99.8%)\nif (add > 0 && Math.random() < 0.002) {\n  writeTag('DEMO01', 'pk_reject', ((tag('DEMO01', 'pk_reject') || 0) + 1) % 60000);\n}\n// 12 ขวด = 1 กล่อง · 48 กล่อง = 1 พาเลท\nwriteTag('DEMO01', 'pk_cartons', Math.floor(nf / 12) % 60000);\nwriteTag('DEMO01', 'pk_pallets', Math.floor(nf / (12 * 48)) % 60000);\n// ถังพักขวดเปล่า: ไหลลงเรื่อย ๆ แล้ว refill ทุก ~3 นาที\nwriteTag('DEMO01', 'pk_hopper', r(100 - (t % 180) / 180 * 70));"
+    }
+  ]
+}

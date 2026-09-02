@@ -3,6 +3,7 @@
 //   MVP: ยังไม่ผูก tag engine (PLC) — รับผ่าน ingest() / API เพื่อทดสอบก่อน
 const path = require('path');
 const fs = require('fs');
+const csv = require('../csvUtil');   // configDir() เคารพ env KPE_DATA_DIR — ใช้แยก instance
 const { loadLineConfigs, saveLineConfig, deleteLineConfig } = require('./lineConfig');
 const { decode } = require('./decoder');
 const { LineEngine, checkSpec } = require('./engine');
@@ -26,7 +27,12 @@ class LineRecorderManager {
   constructor({ seedDir, runtimeDir, store, tagEngine, plcIntervalMs, dbManager, licenseMaxLines, queryBufferManager } = {}) {
     this._licenseMaxLines = typeof licenseMaxLines === 'function' ? licenseMaxLines : null;   // () => จำนวนไลน์สูงสุดจาก license (DLClr) · null = ไม่จำกัด
     this.seedDir = seedDir || path.join(__dirname, '..', 'config', 'lines');                       // ตัวอย่าง (committed) · backend/src/config/lines
-    this.runtimeDir = runtimeDir || path.join(__dirname, '..', '..', '..', 'config', 'lines');     // user สร้าง/ตั้งชื่อเอง (per-machine · /config/lines · gitignored)
+    // user สร้าง/ตั้งชื่อเอง (per-machine · <base>/config/lines · gitignored)
+    //   ⚠️ ต้องอิง csvUtil.configDir() (ซึ่งเคารพ env KPE_DATA_DIR) ไม่ใช่ path จาก __dirname ตรง ๆ
+    //   ของเดิมชี้ repo-root/config/lines เสมอ → หลาย instance บนเครื่องเดียวกัน (demo server / unit
+    //   ที่รันคู่กัน) อ่านไลน์ชุดเดียวกันหมด ข้อมูลไลน์จริงรั่วข้าม instance (เจอจริง: demo tenant
+    //   เห็นไลน์ของเครื่อง dev) · KPE_DATA_DIR ไม่ตั้ง = ได้ path เดิม จึงไม่กระทบเครื่องลูกค้าที่ใช้อยู่
+    this.runtimeDir = runtimeDir || path.join(csv.configDir(), 'lines');
     this.configs = {};
     this.dbManager = dbManager || null;          // resolve DB connection ตามชื่อ (Setup → Databases)
     this.queryBufferManager = queryBufferManager || null;   // auto-สร้าง buffer ของกราฟ measure
@@ -551,6 +557,7 @@ class LineRecorderManager {
           params, stats: d.stats || null,   // min/max/avg ต่อ param (เมื่อเปิด track)
           spec: d.spec || null,   // เกณฑ์ที่ใช้จริง (resolve แล้ว) → แสดง min–max
           dwellSp: d.dwellSp != null ? d.dwellSp : null, dwellTol: d.dwellTol != null ? d.dwellTol : null,
+          dwellTolSec: d.dwellTolSec != null ? d.dwellTolSec : null,
           dwellInSpec: d.dwellInSpec != null ? d.dwellInSpec : null,   // null = ไม่ตั้ง/เทียบเฉย ๆ
           hasSeries: d.hasSeries === true,   // มี minigraph ในตาราง series
           ts: e.ts, source: 'event',
@@ -571,6 +578,7 @@ class LineRecorderManager {
         inSpec: s.inSpec != null ? s.inSpec : (s.spec ? _withinSpec(params, s.spec) : (checkSpec(cfg.fields, s.station, params, (stations[String(s.station)] || {}).spec).length === 0)),
         params, stats: s.stats || null, spec: s.spec || null,
         dwellSp: s.dwellSp != null ? s.dwellSp : null, dwellTol: s.dwellTol != null ? s.dwellTol : null,
+        dwellTolSec: s.dwellTolSec != null ? s.dwellTolSec : null,
         dwellInSpec: s.dwellInSpec != null ? s.dwellInSpec : null,
         hasSeries: s.hasSeries === true,
         ts: s.ts, source: 'steps',

@@ -98,21 +98,31 @@ class LineEngine {
 
     // resolve เกณฑ์ spec (เลข/tag/offset) ตอนนี้ → เก็บเกณฑ์ที่ใช้จริง (ดูย้อนหลังไม่เพี้ยนเมื่อ setpoint เปลี่ยน)
     let specMap = null;
-    let dwellSp = null, dwellTol = null, dwellInSpec = null;   // time setpoint ต่อ stage (เวลาชุบเป้าหมาย)
+    let dwellSp = null, dwellTol = null, dwellTolSec = null, dwellInSpec = null;   // time setpoint ต่อ stage (เวลาชุบเป้าหมาย)
     if ((ev.type === 'STEP' || ev.type === 'STAGE') && ev.station) {
       const read = this.getTagValue || (() => null);
       const stSpec = ((cfg.stations || {})[String(ev.station)] || {}).spec;   // เกณฑ์เฉพาะบ่อ (ทับเกณฑ์กลาง)
       const m = resolveSpecMap(cfg.fields, ev.station, read, stSpec);
       if (Object.keys(m).length) specMap = m;
-      // stations[st].timeSp = { value | tag:{device,tag}, tolPct } · tolPct ว่าง = เทียบเฉย ๆ (ไม่ตัดสิน)
+      // stations[st].timeSp = { value | tag:{device,tag}, tolPct, tolSec, tolSecTag:{device,tag} }
+      //   tolSec/tolSecTag = asymmetric (pass: sp <= actual <= sp+T) · tolPct = old symmetric ±% · neither = pass when actual >= sp
       const tsp = ((cfg.stations || {})[String(ev.station)] || {}).timeSp;
       if (tsp) {
         const n = (v) => (v == null || v === '' || !Number.isFinite(Number(v))) ? null : Number(v);
         dwellSp = (tsp.tag && tsp.tag.device && tsp.tag.tag) ? n(read(tsp.tag.device, tsp.tag.tag)) : n(tsp.value);
         dwellTol = n(tsp.tolPct);
-        if (dwellSp != null && dwellTol != null && ev.dwell != null) {
-          const lo = dwellSp * (1 - dwellTol / 100), hi = dwellSp * (1 + dwellTol / 100);
-          dwellInSpec = ev.dwell >= lo && ev.dwell <= hi;
+        dwellTolSec = (tsp.tolSecTag && tsp.tolSecTag.device && tsp.tolSecTag.tag)
+          ? n(read(tsp.tolSecTag.device, tsp.tolSecTag.tag))
+          : n(tsp.tolSec);
+        if (dwellSp != null && ev.dwell != null) {
+          if (dwellTolSec != null) {
+            dwellInSpec = ev.dwell >= dwellSp && ev.dwell <= dwellSp + dwellTolSec;
+          } else if (dwellTol != null) {
+            const lo = dwellSp * (1 - dwellTol / 100), hi = dwellSp * (1 + dwellTol / 100);
+            dwellInSpec = ev.dwell >= lo && ev.dwell <= hi;
+          } else {
+            dwellInSpec = ev.dwell >= dwellSp;
+          }
         }
       }
     }
@@ -120,6 +130,7 @@ class LineEngine {
     await store.appendEvent({ ...ev, spec: specMap, series: undefined,   // series แยกตาราง (ไม่ฝังใน event — กัน event บวม)
       hasSeries: ev.series ? true : undefined,
       dwellSp: dwellSp != null ? dwellSp : undefined, dwellTol: dwellTol != null ? dwellTol : undefined,
+      dwellTolSec: dwellTolSec != null ? dwellTolSec : undefined,
       dwellInSpec: dwellInSpec != null ? dwellInSpec : undefined, jobKey, ts });   // 1) source of truth ก่อนเสมอ
 
     // job identity (idempotent ทุก type — ENTER/STEP/STAGE ล้วน ensure ได้)
@@ -146,16 +157,22 @@ class LineEngine {
       const values = _applyFormulas(cfg.fields, ev.station, { ...(ev.values || {}) });
       violations = specMap ? violFromMap(values, specMap)
         : checkSpec(cfg.fields, ev.station, values, ((cfg.stations || {})[String(ev.station)] || {}).spec);
-      if (dwellInSpec === false) {   // เวลาชุบหลุด SP±% → ✗ + alarm (ผ่าน violation hook เดิม)
-        const lo = Math.round(dwellSp * (1 - dwellTol / 100) * 100) / 100, hi = Math.round(dwellSp * (1 + dwellTol / 100) * 100) / 100;
-        violations.push({ key: '__dwell', value: ev.dwell, spec: { min: lo, max: hi, sp: dwellSp, tolPct: dwellTol } });
+      if (dwellInSpec === false) {   // เวลาชุบไม่ผ่านเกณฑ์ → ✗ + alarm (ผ่าน violation hook เดิม)
+        if (dwellTolSec != null) {
+          violations.push({ key: '__dwell', value: ev.dwell, spec: { min: dwellSp, max: dwellSp + dwellTolSec, sp: dwellSp, tolSec: dwellTolSec } });
+        } else if (dwellTol != null) {
+          const lo = Math.round(dwellSp * (1 - dwellTol / 100) * 100) / 100, hi = Math.round(dwellSp * (1 + dwellTol / 100) * 100) / 100;
+          violations.push({ key: '__dwell', value: ev.dwell, spec: { min: lo, max: hi, sp: dwellSp, tolPct: dwellTol } });
+        } else {
+          violations.push({ key: '__dwell', value: ev.dwell, spec: { min: dwellSp, sp: dwellSp } });
+        }
       }
       step = await store.upsertStep(jobKey, {
         station: ev.station, name: ev.stationName, seq: ev.seq, type: ev.stationType,
         enterTs: ev.enterTs, exitTs: ev.exitTs, dwell: ev.dwell != null ? ev.dwell : null, params: values,
         stats: ev.stats || null,   // min/max/avg ต่อ param (เมื่อเปิด track) · null = ไม่ track
         spec: specMap,   // เกณฑ์ที่ resolve แล้ว (tag/offset) ณ ตอนนั้น · null = ไม่มีเกณฑ์
-        dwellSp, dwellTol, dwellInSpec,   // time setpoint (resolve แล้ว) + ผลตัดสิน (null = เทียบเฉย ๆ)
+        dwellSp, dwellTol, dwellTolSec, dwellInSpec,   // time setpoint (resolve แล้ว) + ผลตัดสิน (null = เทียบเฉย ๆ)
         hasSeries: ev.series ? true : null,   // มี minigraph ในตาราง series (ปุ่ม 📈 เปิดกราฟ LR เอง)
         inSpec: violations.length === 0, ts,
       });

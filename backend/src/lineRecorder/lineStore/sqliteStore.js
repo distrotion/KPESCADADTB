@@ -150,6 +150,7 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);`;
       enterTs: step.enterTs != null ? step.enterTs : null, exitTs: step.exitTs != null ? step.exitTs : null, dwell,
       params: step.params || {}, ...(step.stats ? { stats: step.stats } : {}), ...(step.spec ? { spec: step.spec } : {}),
       ...(step.dwellSp != null ? { dwellSp: step.dwellSp } : {}), ...(step.dwellTol != null ? { dwellTol: step.dwellTol } : {}),
+      ...(step.dwellTolSec != null ? { dwellTolSec: step.dwellTolSec } : {}),
       ...(step.dwellInSpec != null ? { dwellInSpec: step.dwellInSpec } : {}),
       ...(step.hasSeries === true ? { hasSeries: true } : {}),
       inSpec: step.inSpec != null ? step.inSpec : null, ts: step.ts || Date.now(),
