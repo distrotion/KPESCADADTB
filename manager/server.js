@@ -18,7 +18,16 @@ bus.setMaxListeners(50);
 // stdout/stderr พัง (เปิดจาก terminal แล้วปิดหน้าต่าง ฯลฯ) → กลืนเงียบ กัน EPIPE วนใน handler
 process.stdout.on('error', () => {});
 process.stderr.on('error', () => {});
-process.on('uncaughtException', (err) => console.error('[manager][uncaughtException]', err && err.stack ? err.stack : err));
+process.on('uncaughtException', (err) => {
+  console.error('[manager][uncaughtException]', err && err.stack ? err.stack : err);
+  // ข้อยกเว้นเดียวของกฎ "ห้ามล้ม": bind พอร์ตไม่ได้ = คุมอะไรไม่ได้จริง (หน้าเว็บเข้าไม่ได้ · สั่ง start/stop ไม่ได้)
+  //   ถ้าอยู่ต่อจะได้ Manager พิการ แต่ WinSW/systemd เห็นว่า "ยังรันอยู่" เลยไม่ปลุกใหม่ → ต้องออกเอง
+  //   (Node บางเวอร์ชัน setupListenHandle throw ผ่าน nextTick → server.on('error') ไม่ยิง จึงต้องดักที่นี่)
+  if (err && err.syscall === 'listen') {
+    console.error(`[manager] listen ล้มเหลว → ออก (${err.code || ''} :${err.port || ''})`);
+    process.exit(1);
+  }
+});
 process.on('unhandledRejection', (r) => console.error('[manager][unhandledRejection]', r && r.message ? r.message : r));
 
 // ── ที่เก็บ config ของ Manager (installer-safe) ───────────────────────────────────
@@ -205,16 +214,20 @@ function notify(title, msg) {
 }
 
 // ── Check if a port is actually listening ─────────────────────────────────────
-function checkPort(port) {
+//   แยก 'refused' (ไม่มีใคร listen แล้ว = listener ตาย) ออกจาก 'timeout' (ยัง listen อยู่แต่ไม่ตอบ = event loop ยุ่ง)
+//   สำคัญกับ watchdog ด้านล่าง: ตัวที่ "แค่ยุ่ง" (เช่นกำลังทำ query ใหญ่) ห้ามไปเตะทิ้งกลางคัน
+//   error อื่นที่ไม่ใช่ ECONNREFUSED นับเป็น 'timeout' ไว้ก่อน — เดาผิดไปทาง "ไม่ฆ่า" ปลอดภัยกว่า
+function probePort(port) {
   return new Promise(resolve => {
     const socket = new net.Socket();
     socket.setTimeout(400);
-    socket.once('connect', () => { socket.destroy(); resolve(true); });
-    socket.once('timeout', () => { socket.destroy(); resolve(false); });
-    socket.once('error',   () => { socket.destroy(); resolve(false); });
+    socket.once('connect', () => { socket.destroy(); resolve('open'); });
+    socket.once('timeout', () => { socket.destroy(); resolve('timeout'); });
+    socket.once('error',   (e) => { socket.destroy(); resolve(e && e.code === 'ECONNREFUSED' ? 'refused' : 'timeout'); });
     socket.connect(port, '127.0.0.1');
   });
 }
+function checkPort(port) { return probePort(port).then(s => s === 'open'); }
 
 // รอจนพอร์ตว่าง (ไม่มีใคร listening) — poll สูงสุด timeoutMs · กัน EADDRINUSE ตอน spawn แทน delay ตายตัว (B4)
 //   หลัง killPort พอร์ตมักว่างเร็ว (connect→ECONNREFUSED ทันที) → ไม่หน่วงเกินจำเป็น · ถ้า TIME_WAIT ช้า ก็รอจนว่างจริง
@@ -274,8 +287,10 @@ const WATCHED_PORTS = [PORTS.frontend, PORTS.backend, PORTS.manager];
 
 async function pollPorts() {
   const cp = portsMod.ports();
+  const svcByPort = { [cp.backend]: 'backend', [cp.frontend]: 'frontend', [cp.deploy]: 'deploy' };
   for (const port of [cp.frontend, cp.backend, cp.manager, cp.deploy]) {
-    const open = await checkPort(port);
+    const state = await probePort(port);
+    const open = state === 'open';
     const pids = open ? await getPidsOnPort(port) : [];
     const prev = portState[port];
 
@@ -283,11 +298,51 @@ async function pollPorts() {
       portState[port] = { open, pids };
       bus.emit('port', { port, open, pids });
     }
+    const name = svcByPort[port];
+    if (name) watchdogTick(name, port, state);
   }
 }
 
 setInterval(pollPorts, 1000);
 pollPorts(); // initial
+
+// ── (B6) watchdog: "process ยังอยู่ แต่พอร์ตตาย" → restart ─────────────────────
+//   ทั้ง WinSW/systemd และ exit handler ด้านล่าง ตัดสินว่าลูกยังดีอยู่มั้ยจาก "process ยังอยู่มั้ย"
+//   ซึ่งพลาดเคส "ตายครึ่งตัว": listener หลุดแต่ process ไม่ตาย (timer/socket อื่นคา event loop ไว้)
+//   เจอจริงที่ .34 (2026-09-16) — backend ดับเงียบหลายชั่วโมง · หน้าจอ Manager โชว์ portOpen=false
+//   มาตลอดแต่ไม่มีใครเอาไปทำอะไรต่อ (รู้ว่าตาย แต่ได้แค่โชว์)
+//   ที่นี่จึงตัดสินด้วยสัญญาณที่ตรงกับความจริง: "พอร์ตรับ connection ได้มั้ย"
+const DEAD_PORT_SECS = 30;   // refused ติดกันกี่วินาทีถึงถือว่าตายจริง (สั้นกว่านี้เสี่ยงเตะตอนสะดุดชั่วคราว)
+function watchdogTick(name, port, state) {
+  const svc = SERVICES[name];
+  if (!svc) return;
+  // ไม่ได้ตั้งใจให้รัน / ยังไม่ได้ spawn / กำลังปิดเครื่อง → ไม่ใช่เรื่องของ watchdog
+  if (!svc.proc || !svc.wantRunning || _mgrShuttingDown) { svc._deadProbes = 0; return; }
+  if (state === 'open') { svc._portWasOpen = true; svc._deadProbes = 0; return; }
+  // 'timeout' = ยัง listen อยู่แต่ตอบช้า (query ใหญ่ / event loop ยุ่ง) → ปล่อยไว้ ห้ามเตะ
+  // ยังไม่เคยเปิดพอร์ตได้เลย = กำลังบูต (หรือ bind ไม่ได้ ซึ่งลูกจะ exit เองอยู่แล้ว) → ยังไม่ต้องยุ่ง
+  if (state !== 'refused' || !svc._portWasOpen) { svc._deadProbes = 0; return; }
+  if (++svc._deadProbes < DEAD_PORT_SECS) return;
+  svc._deadProbes = 0;
+  svc._portWasOpen = false;
+  pushLog(name, `── ⚠️ process ยังอยู่ แต่พอร์ต ${port} ปฏิเสธ connection ติดกัน ${DEAD_PORT_SECS}s (listener ตาย) → restart ──`);
+  dumpChildLogs(name);   // เก็บหลักฐานลงไฟล์ก่อนฆ่า — log ของลูกอยู่ใน RAM ตายแล้วหายหมด
+  notify(`KPE SCADA — ${svc.label} ไม่ตอบ`, `พอร์ต ${port} ตายทั้งที่ process ยังอยู่ → restart ให้แล้ว`);
+  const p = svc.proc;
+  try { p.kill('SIGTERM'); } catch (_) {}
+  setTimeout(() => { try { if (p && !p.killed) p.kill('SIGKILL'); } catch (_) {} }, 3000);
+  // ไม่แตะ wantRunning → exit handler จะ scheduleRespawn ให้เอง (มี backoff + crash-loop guard อยู่แล้ว)
+}
+
+// log ของลูกเก็บใน RAM อย่างเดียว (svc.logs) — ตายแล้วหายหมด เคยทำให้สืบสาเหตุย้อนหลังไม่ได้
+//   ก่อนฆ่า/ตอนตายไม่ตั้งใจ ให้พ่นลง stderr ของ Manager ซึ่ง WinSW (Windows) / journald (Linux) เก็บลงไฟล์ให้
+function dumpChildLogs(name, n = 25) {
+  const logs = (SERVICES[name] && SERVICES[name].logs) || [];
+  if (!logs.length) return;
+  console.error(`[manager] ── ${n} บรรทัดท้ายของ ${name} (เก็บไว้สืบสาเหตุ) ──`);
+  for (const e of logs.slice(-n)) console.error(`[${name}] ${e.line}`);
+  console.error(`[manager] ── จบ log ${name} ──`);
+}
 
 // ── Process log helper ────────────────────────────────────────────────────────
 function pushLog(name, line) {
@@ -362,6 +417,7 @@ async function startService(name) {
 
   const child = spawn(cmd, args, { cwd, env });
   svc.proc = child;
+  svc._portWasOpen = false; svc._deadProbes = 0;   // (B6) เริ่มนับใหม่ทุกครั้งที่ spawn — ระหว่างบูต watchdog ยังไม่แตะ
 
   child.stdout.on('data', d => pushLog(name, d.toString()));
   child.stderr.on('data', d => pushLog(name, d.toString()));
@@ -370,7 +426,10 @@ async function startService(name) {
     pushLog(name, `── Process exited (code ${code ?? 0}) ──`);
     bus.emit('proc', { name, running: false });
     notify(`KPE SCADA — ${svc.label} stopped`, `Exit code: ${code ?? 0}`);
-    if (svc.wantRunning && !_mgrShuttingDown) scheduleRespawn(name);   // (B1) ตายไม่ตั้งใจ → ปลุกใหม่
+    if (svc.wantRunning && !_mgrShuttingDown) {
+      dumpChildLogs(name);     // (B6) ตายไม่ตั้งใจ → เก็บ log ท้าย ๆ ลงไฟล์ไว้สืบสาเหตุ ก่อนที่ start ใหม่จะล้าง svc.logs
+      scheduleRespawn(name);   // (B1) แล้วปลุกใหม่
+    }
   });
 
   notify(`KPE SCADA — ${svc.label} started`, `Port ${svc.port}`);

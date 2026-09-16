@@ -157,6 +157,8 @@ app.use('/api/stock', featureGate('chem-store'));
 // backend = HTTP ภายในเสมอ (bind 127.0.0.1) — TLS ทำที่ขอบ (serve.js/deploy.js) แล้ว proxy มา
 //   ถ้าจะเปิด backend ออก LAN + TLS เอง ค่อยเพิ่มภายหลัง (ระวัง proxy serve.js→backend ต้องเป็น https ด้วย)
 const server = http.createServer(app);
+// ตั้ง true ตอน graceful shutdown — ตัวเฝ้า listener (ใต้ server.listen) ใช้แยก "ปิดเพราะถูกสั่ง" ออกจาก "ตายเอง"
+let _shuttingDown = false;
 // WS: enforce token เดียวกัน (header มาจาก serve.js/deploy.js ตอน upgrade)
 const wss = new WebSocket.Server({
   server,
@@ -2815,6 +2817,21 @@ function startServicesOnce() {
     try { activityLog.log({ category: 'system', action: 'service_start', target: 'backend', detail: `listen failed: ${why}`, result: 'fail' }); } catch (_) {}
     process.exit(1);
   });
+  // listener ตายทั้งที่ process ยังอยู่ → ต้องออก ให้ Manager/Service ปลุกใหม่
+  //   เคสจริง (.34 · 2026-09-16): bind 4012 สำเร็จ เสิร์ฟไปสักพัก แล้ว listener หลุดหาย แต่ process ไม่ตาย
+  //   เพราะ kpenetwork/timer ยังคา event loop ไว้ → ทั้ง WinSW และ Manager ตัดสินจาก "process ยังอยู่มั้ย"
+  //   เลยไม่มีใครเห็นว่าตาย · โรงงานดับเงียบหลายชั่วโมงจนมีคนไปเปิดหน้าจอเอง
+  server.on('close', () => {
+    if (!_listening || _shuttingDown) return;
+    console.error('[backend] HTTP listener ปิดเองโดยไม่ได้สั่ง shutdown → ออกเพื่อให้ถูกปลุกใหม่');
+    process.exit(1);
+  });
+  //   เผื่อเคสที่ listener หายโดยไม่ยิง 'close' — ตรวจซ้ำทุก 30s (unref: ตัวจับเวลานี้ต้องไม่คา process ไว้เอง)
+  setInterval(() => {
+    if (!_listening || _shuttingDown || server.listening) return;
+    console.error('[backend] ตรวจพบว่าไม่ได้ listening แล้ว → ออกเพื่อให้ถูกปลุกใหม่');
+    process.exit(1);
+  }, 30000).unref();
   server.listen(PORT, HOST, () => {
     _listening = true;
     console.log(`KPE SCADA Backend running on ${HOST}:${PORT}`);
@@ -2840,7 +2857,6 @@ function startServicesOnce() {
 })();
 
 // graceful shutdown — รับทั้ง SIGINT (Ctrl+C/dev) และ SIGTERM (systemd/launchd/Windows Service สั่งหยุด) (B2)
-let _shuttingDown = false;
 function gracefulShutdown(sig) {
   if (_shuttingDown) return; _shuttingDown = true;
   console.log(`[backend] ${sig} → graceful shutdown`);
