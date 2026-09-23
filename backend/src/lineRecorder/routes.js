@@ -1,6 +1,6 @@
 // routes.js — mount REST API ของ Line Recorder เข้า express app (เรียกครั้งเดียวจาก server.js)
 //   auth/token middleware ของ app ครอบให้อยู่แล้ว (เหมือน /api/stock)
-function mountLineRecorder(app, manager) {
+function mountLineRecorder(app, manager, activityLog) {
   const se = (res, e) => res.status(400).json({ ok: false, error: e && e.message ? e.message : String(e) });
 
   app.get('/api/line-recorder/lines', (_req, res) => { const lines = manager.listLines(); res.json({ ok: true, lines, count: lines.length, maxLines: manager.maxLines() }); });
@@ -9,6 +9,26 @@ function mountLineRecorder(app, manager) {
     res.json({ ok: true, config: c });
   });
   app.post('/api/line-recorder/reload', (_req, res) => res.json({ ok: true, lines: manager.reload() }));
+
+  // แก้ป้ายบ่อจากระบบนอก (MASTER QC) — รับเฉพาะ name + tolSec · key อื่นใน body ถูกเมินทิ้ง ไม่เขียนตาม
+  //   มีผลกับ GET .../config ทันที (patchStation → reload) ไม่ต้อง restart · ไลน์ที่เดินอยู่ไม่สะดุด
+  app.put('/api/line-recorder/lines/:line/stations/:station', (req, res) => {
+    try {
+      const r = manager.patchStation(req.params.line, req.params.station, req.body || {});
+      if (activityLog) {
+        try {
+          activityLog.log({ category: 'config', action: 'lr_station_patch', target: `${r.line}/${r.station}`,
+            detail: `name "${r.previous.name}"→"${r.current.name}" · tolSec ${r.previous.tolSec}→${r.current.tolSec}`,
+            user: req.get('X-Requested-By') || 'external', actorType: 'external', result: 'ok' });
+        } catch (_) {}
+      }
+      res.json({ ok: true, ...r });
+    } catch (e) {
+      const code = e && e.code === 'bad-request' ? 400
+        : (e && (e.code === 'unknown-line' || e.code === 'unknown-station')) ? 404 : 500;
+      res.status(code).json({ ok: false, error: e && e.code ? e.code : 'error', message: e && e.message ? e.message : String(e) });
+    }
+  });
 
   // สร้างตาราง (per-line) บน DB ของไลน์ — ปุ่ม "สร้างตาราง"
   app.post('/api/line-recorder/lines/:line/ensure-schema', async (req, res) => {

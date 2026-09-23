@@ -477,6 +477,65 @@ class LineRecorderManager {
     return raw.setNotes;
   }
 
+  // แก้ "ป้าย" ของบ่อจากระบบนอก (MASTER QC เป็นที่แก้ชื่อที่เดียว) — ตั้งใจให้แคบมาก
+  //   แก้ได้เฉพาะ: name (ชื่อที่คนอ่าน) + timeSp.tolSec (เวลาชุบยอมให้เกินได้กี่วินาที)
+  //   ห้ามแตะ seq/set/type/entry/finish/timeSp.tag/paramTags — นั่นคือโครงสร้างไลน์จริง พลาดแล้วกระทบของที่เดินอยู่
+  //   ปลอดภัยเพราะ logic ทุกตัวอ้างบ่อด้วย "เลข" (stations[<เลข>]) · ชื่อถูกใช้ที่ decoder.stationName อย่างเดียว = ป้ายล้วน
+  //   name '' → คืนชื่อเดิมจาก seed (ไม่ใช่ลบทิ้ง) เพราะ reload() = {...seed, ...runtime} ทับกันทั้งไฟล์ ไม่ merge รายฟิลด์
+  //   tolSec null → ลบเกณฑ์ = ชุบนานแค่ไหนก็ผ่าน (engine: ไม่มี tolSec → ผ่านเมื่อ actual >= sp)
+  patchStation(line, station, patch) {
+    const cfg = this.configs[line];
+    if (!cfg) { const e = new Error(`ไม่พบไลน์ "${line}"`); e.code = 'unknown-line'; throw e; }
+    const st = String(station);
+    if (!(cfg.stations || {})[st]) { const e = new Error(`ไม่พบบ่อ "${st}" ในไลน์ "${line}"`); e.code = 'unknown-station'; throw e; }
+
+    const p = (patch && typeof patch === 'object') ? patch : {};
+    const has = (k) => Object.prototype.hasOwnProperty.call(p, k);
+    if (!has('name') && !has('tolSec')) { const e = new Error('ไม่มีอะไรให้แก้ (รับเฉพาะ name, tolSec)'); e.code = 'bad-request'; throw e; }
+
+    let name = null;
+    if (has('name')) {
+      if (p.name != null && typeof p.name !== 'string') { const e = new Error('name ต้องเป็นข้อความ'); e.code = 'bad-request'; throw e; }
+      name = p.name == null ? '' : p.name.trim();
+      if (name.length > 40) { const e = new Error('name ยาวเกิน 40 ตัวอักษร'); e.code = 'bad-request'; throw e; }
+    }
+    let tolSec;
+    if (has('tolSec')) {
+      if (p.tolSec == null || p.tolSec === '') tolSec = null;
+      else {
+        const n = Number(p.tolSec);
+        if (!Number.isFinite(n) || n < 0) { const e = new Error('tolSec ต้องเป็นจำนวนวินาที >= 0 (หรือ null = ไม่จำกัด)'); e.code = 'bad-request'; throw e; }
+        tolSec = n;
+      }
+    }
+
+    const file = path.join(this.runtimeDir, String(line).replace(/[^A-Za-z0-9_\-]/g, '_') + '.json');
+    let raw;
+    try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); }
+    catch (_) { raw = JSON.parse(JSON.stringify({ ...cfg, _file: undefined })); }   // seed-only → สร้าง override ใน runtime
+    raw.stations = raw.stations || {};
+    const cur = { ...(raw.stations[st] || cfg.stations[st] || {}) };
+    const snap = (o) => ({ name: o.name || '', tolSec: ((o.timeSp || {}).tolSec != null ? Number(o.timeSp.tolSec) : null) });
+    const previous = snap(cur);
+
+    if (has('name')) {
+      if (name) cur.name = name;
+      else {
+        const seedName = (((loadLineConfigs(this.seedDir)[line] || {}).stations || {})[st] || {}).name;
+        if (seedName) cur.name = seedName; else delete cur.name;
+      }
+    }
+    if (has('tolSec')) {
+      const tsp = { ...(cur.timeSp || {}) };
+      if (tolSec == null) delete tsp.tolSec; else tsp.tolSec = tolSec;
+      if (Object.keys(tsp).length) cur.timeSp = tsp; else delete cur.timeSp;
+    }
+    raw.stations[st] = cur;
+    saveLineConfig(this.runtimeDir, raw);
+    this.reload();
+    return { line, station: st, previous, current: snap(((this.configs[line] || {}).stations || {})[st] || {}) };
+  }
+
   // หมายเหตุต่อบ่อ (คนพิมพ์เองในใบรายงาน · ใครพิมพ์ก็ได้ ไม่ต้องเลือกชื่อ) → job.steps[<บ่อ>].note
   //   "ต่อบ่อ" ไม่ใช่ต่อรอบ — งานที่ย้อนบ่อเดิม รอบหลังจะทับรอบแรก (steps เก็บบ่อละ 1 ค่า)
   async setStepNote(line, { jobKey = null, station = null, note = '' } = {}) {

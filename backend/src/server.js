@@ -248,7 +248,7 @@ const { mountLineRecorder } = require('./lineRecorder/routes');
 const lineRecorder = new LineRecorderManager({ tagEngine: engine, dbManager, queryBufferManager, licenseMaxLines: () => license.maxLines() });   // DLClr line-limit (disk license · USB ไม่เกี่ยว) · qbm = auto-สร้าง buffer กราฟ measure
 lineRecorder._onViolation = (line, ev, viol) => { try { broadcast({ type: 'line_spec_violation', line, station: ev.station, carrier: ev.carrier, viol, t: Date.now() }); } catch (_) {} };
 engine.setLineRecorder(lineRecorder);   // device type 'lr' อ่าน job field ผ่าน LR manager
-mountLineRecorder(app, lineRecorder);
+mountLineRecorder(app, lineRecorder, activityLog);
 
 // PLCMEM (PLC Memory Pipeline · docs/PLCMEM-BLUEPRINT.md) — sweep PLC D/ZR ล้าน register → buffer(pg) → UI diff/write/snapshot
 //   ต่อ PLC เสมอ (§0 กติกาเหล็ก) · ไม่แตะ tag/poll เดิม · additive ล้วน
