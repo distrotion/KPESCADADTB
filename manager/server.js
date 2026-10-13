@@ -260,7 +260,13 @@ function getPidsOnPort(port) {
       //   เช่น gateway (ใน Manager) ต่อออกไป serverB:3012 → killPort(3012) ตอน start frontend
       //   จะ kill -9 ตัว Manager เอง (boot แล้วตายทันทีทุกครั้ง) รวมถึง browser ที่ต่อพอร์ตค้างอยู่
       exec(`lsof -ti:${port} -sTCP:LISTEN`, (err, stdout) => {
-        resolve((stdout || '').trim().split('\n').filter(Boolean));
+        const pids = (stdout || '').trim().split('\n').filter(Boolean);
+        if (pids.length || process.platform !== 'linux') return resolve(pids);
+        // minimal Linux images may have no lsof: ss lists the listener's pid too (-H no header · sport filter = local port only)
+        exec(`ss -ltnpH "sport = :${port}"`, (_e, out) => {
+          const set = new Set(); for (const m of String(out || '').matchAll(/pid=(\d+)/g)) set.add(m[1]);
+          resolve([...set]);
+        });
       });
     }
   });
@@ -328,9 +334,9 @@ function watchdogTick(name, port, state) {
   pushLog(name, `── ⚠️ process ยังอยู่ แต่พอร์ต ${port} ปฏิเสธ connection ติดกัน ${DEAD_PORT_SECS}s (listener ตาย) → restart ──`);
   dumpChildLogs(name);   // เก็บหลักฐานลงไฟล์ก่อนฆ่า — log ของลูกอยู่ใน RAM ตายแล้วหายหมด
   notify(`KPE SCADA — ${svc.label} ไม่ตอบ`, `พอร์ต ${port} ตายทั้งที่ process ยังอยู่ → restart ให้แล้ว`);
-  const p = svc.proc;
-  try { p.kill('SIGTERM'); } catch (_) {}
-  setTimeout(() => { try { if (p && !p.killed) p.kill('SIGKILL'); } catch (_) {} }, 3000);
+  restartBudget.record(name, 'watchdog');   // B6 never waits for the budget (its own crash-loop guard stops a loop); it only tells the others
+  svc._killedBy = 'watchdog';
+  killChild(svc.proc);
   // ไม่แตะ wantRunning → exit handler จะ scheduleRespawn ให้เอง (มี backoff + crash-loop guard อยู่แล้ว)
 }
 
@@ -342,6 +348,70 @@ function dumpChildLogs(name, n = 25) {
   console.error(`[manager] ── ${n} บรรทัดท้ายของ ${name} (เก็บไว้สืบสาเหตุ) ──`);
   for (const e of logs.slice(-n)) console.error(`[${name}] ${e.line}`);
   console.error(`[manager] ── จบ log ${name} ──`);
+}
+
+// ── Health tracker (backend + frontend) - manager/healthTracker.js ─────────────────────────────────────────────
+//   Every 10 s each child is asked once (backend /api/health, frontend /): ok / hung (TCP connected, no HTTP answer) / refused / unknown.
+//   It is asked where it was SPAWNED to listen (an edited ports.json only applies after a restart), on every loopback address of that host,
+//   https for serve.js with TLS on (plus the other scheme if the first cannot even speak). "unknown" (address gone with the WiFi,
+//   unreachable...) is never evidence: a network problem must not look like a dead service.
+const { createRestartBudget, monoMs } = require('./restartBudget');
+const { createHealthTracker, probeTarget, loopbackHosts } = require('./healthTracker');
+const healthTracker = createHealthTracker();
+const HEALTH_NAMES = ['backend', 'frontend'];
+function listenTarget(cur, name) {
+  if (name === 'backend') return { host: cur.backendHost, port: cur.backend, tls: false, path: '/api/health', schemeFallback: false };
+  return { host: '127.0.0.1', port: cur.frontend, tls: !!(cur.tls && cur.tls.enabled), path: '/', schemeFallback: true };
+}
+async function healthProbe(name) {
+  const svc = SERVICES[name];
+  const t = (svc.proc && svc._listenAt) || listenTarget(portsMod.ports(), name);   // a Manager child: where it was spawned · else (orphan): ports.json
+  const r = await probeTarget({ ...t, timeoutMs: 5000 });
+  healthTracker.note(name, r, { owned: !!svc.proc });
+  return r;
+}
+// one budget for every automatic restart (B6 watchdog, crash respawn, L1+ hang detector, kpelink repair) - see manager/restartBudget.js
+const restartBudget = createRestartBudget({
+  onGiveUp: (svc, n) => {
+    console.error(`[manager] ${svc}: ${n} automatic restarts in 24 h - automatic hang/peer restarts stop here, people must look`);
+    notify(`KPE SCADA — ${svc} restarted ${n}× in 24 h`, 'automatic restarts paused · check the logs');
+  },
+});
+// kill a tracked child for good: SIGTERM, then SIGKILL if it has not exited after 3 s
+//   (`p.killed` only says a signal was SENT, so it can never be the test; a hung child with a SIGTERM handler never runs it)
+function killChild(p) {
+  if (!p) return;
+  try { p.kill('SIGTERM'); } catch (_) {}
+  setTimeout(() => { try { if (p.exitCode === null && p.signalCode === null) p.kill('SIGKILL'); } catch (_) {} }, 3000);
+}
+
+// ── (L1+) a child whose port still accepts connections but has given no HTTP answer at all for HUNG_SECS = hung ────────
+//   B6 deliberately ignores 'timeout' (busy for a moment, e.g. a big query) - but 5 minutes without one answer is not a moment, and the
+//   kernel keeps accepting TCP for a hung process (port "open"), so it has to be asked at the HTTP level · docs/PEER-REPAIR-PLAN.md (L1+)
+const HUNG_SECS = 300;
+let _healthBusy = false;   // a round can take longer than the tick (5 s per hung probe, + a TLS retry): never two at once
+setInterval(async () => {
+  if (_healthBusy) return;
+  _healthBusy = true;
+  try { await healthRound(); } finally { _healthBusy = false; }
+}, 10000).unref();
+async function healthRound() {
+  for (const name of HEALTH_NAMES) {
+    const svc = SERVICES[name];
+    await healthProbe(name);
+    if (!svc.proc || !svc.wantRunning || _mgrShuttingDown) continue;
+    if (healthTracker.hungMs(name) < HUNG_SECS * 1000) continue;     // only "connected, no answer" without a break - never refused/unknown
+    const b = restartBudget.check(name);
+    if (!b.ok) { if (!svc._hungBudgetNoted) { svc._hungBudgetNoted = true; pushLog(name, `── ⚠️ hung ${HUNG_SECS}s+ but automatic restart is on hold (${b.why}) ──`); } continue; }
+    svc._hungBudgetNoted = false;
+    restartBudget.record(name, 'hang-detector');
+    svc._killedBy = 'hang-detector';                                    // the respawn after this exit is part of the same restart
+    pushLog(name, `── ⚠️ ${svc.label} gave no HTTP answer for ${HUNG_SECS}s (hung, process still alive: ${healthTracker.view(name).last}) → restart ──`);
+    dumpChildLogs(name);
+    notify(`KPE SCADA — ${svc.label} hung`, `no HTTP answer for ${HUNG_SECS}s → restarted`);
+    healthTracker.spawned(name);                                        // count again from here
+    killChild(svc.proc);                                                // exit handler → scheduleRespawn (wantRunning stays true)
+  }
 }
 
 // ── Process log helper ────────────────────────────────────────────────────────
@@ -365,11 +435,14 @@ function scheduleRespawn(name) {
   svc._restartTimes.push(now);
   if (svc._restartTimes.length > RESPAWN_MAX) {
     svc.wantRunning = false;
+    svc.gaveUpAt = Date.now();   // kpelink repair: peers must not restart what the crash-loop guard gave up on (even with adoptOrphans)
     pushLog(name, `── ⚠️ crash-loop (ตาย ${svc._restartTimes.length} ครั้งใน ${RESPAWN_WINDOW_MS / 1000}s) → หยุด auto-restart · กด Start เพื่อลองใหม่ ──`);
     notify(`KPE SCADA — ${svc.label} crash-loop`, 'หยุด auto-restart แล้ว · กด Start เพื่อลองใหม่');
     return;
   }
   const delay = Math.min(svc._restartTimes.length * 1000, 5000);   // backoff 1→5s
+  if (svc._killedBy) svc._killedBy = null;                         // B6/L1+ already recorded this restart
+  else restartBudget.record(name, 'respawn', { capped: false });   // a crash: cooldown for the others, not part of the daily cap
   pushLog(name, `── auto-restart ใน ${delay}ms (ครั้งที่ ${svc._restartTimes.length}) ──`);
   svc._respawnTimer = setTimeout(() => {
     svc._respawnTimer = null;
@@ -378,12 +451,17 @@ function scheduleRespawn(name) {
 }
 
 // ── Start / Stop service ──────────────────────────────────────────────────────
-async function startService(name) {
+async function startService(name, opts = {}) {
   // License gate — invalid (Pi + armed) → ปฏิเสธ spawn (ทั้ง auto-start และปุ่ม Start)
   { const s = licenseStatus(); if (s.blocked) return { ok: false, msg: `license invalid (${s.reason}) · machine-id ${s.machineId}` }; }
   if (isRunning(name)) return { ok: false, msg: 'Already running' };
   const svc = SERVICES[name];
+  // an operator Stop/Kill while this start is waiting (killPort, port free) cancels it - checked again before spawning
+  const stopGen = opts.expectStopGen != null ? opts.expectStopGen : (svc._stopGen || 0);
+  if ((svc._stopGen || 0) !== stopGen) return { ok: false, msg: 'stopped by an operator meanwhile' };
   svc.wantRunning = true;   // (B1) ตั้งใจให้รัน → exit handler ใช้ตัดสินใจ respawn เมื่อตายไม่ตั้งใจ
+  svc.gaveUpAt = 0;
+  if (opts.by !== 'peer') setOperatorStop(name, false);   // a peer repair never clears what an operator decided
   if (svc._respawnTimer) { clearTimeout(svc._respawnTimer); svc._respawnTimer = null; }
   svc.logs = [];
 
@@ -406,6 +484,7 @@ async function startService(name) {
   //   (B4) poll จนพอร์ตว่างจริงแทน delay 400ms ตายตัว — แก้ deploy/backend กดครั้งแรก EADDRINUSE ตอน OS ปล่อยพอร์ตช้า (TIME_WAIT)
   const svcPort = { backend: cur.backend, frontend: cur.frontend, deploy: cur.deploy }[name];
   if (svcPort) { try { await killPort(svcPort); await waitPortFree(svcPort, 3000); } catch (_) {} }
+  if ((svc._stopGen || 0) !== stopGen || _mgrShuttingDown) { svc.wantRunning = false; return { ok: false, msg: 'stopped by an operator meanwhile' }; }
 
   let cmd, args, cwd;
   // ใช้ node ตัวเดียวกับที่รัน Manager (process.execPath) → ลูกได้ node เดียวกับ Manager (bundled vendor\node) · ไม่พึ่งลำดับ PATH
@@ -418,6 +497,9 @@ async function startService(name) {
   const child = spawn(cmd, args, { cwd, env });
   svc.proc = child;
   svc._portWasOpen = false; svc._deadProbes = 0;   // (B6) เริ่มนับใหม่ทุกครั้งที่ spawn — ระหว่างบูต watchdog ยังไม่แตะ
+  if (HEALTH_NAMES.includes(name)) { svc._listenAt = listenTarget(cur, name); healthTracker.spawned(name); }   // (L1+ / kpelink repair) probe where it listens · count from this spawn
+  svc._killedBy = null;
+  if (peerRepairApi) peerRepairApi.clearVotes(name);    // votes were about the process that is gone now
 
   child.stdout.on('data', d => pushLog(name, d.toString()));
   child.stderr.on('data', d => pushLog(name, d.toString()));
@@ -440,12 +522,32 @@ async function startService(name) {
 function stopService(name) {
   const svc = SERVICES[name];
   svc.wantRunning = false;   // (B1) ตั้งใจหยุด → exit handler จะไม่ respawn
+  svc._stopGen = (svc._stopGen || 0) + 1;              // cancels a start/restart that is still waiting
+  if (!_mgrShuttingDown) setOperatorStop(name, true);   // kpelink repair: an operator's Stop is never undone by peers (even with adoptOrphans)
   if (svc._respawnTimer) { clearTimeout(svc._respawnTimer); svc._respawnTimer = null; }   // ยกเลิก respawn ที่ค้างคิว
   if (!svc.proc) return { ok: false, msg: 'Not running' };
-  svc.proc.kill('SIGTERM');
-  setTimeout(() => { if (svc.proc) svc.proc.kill('SIGKILL'); }, 3000);
+  killChild(svc.proc);   // SIGTERM, SIGKILL after 3 s - aimed at THIS child (not whatever svc.proc is by then)
   return { ok: true };
 }
+
+// An operator's Stop / Kill is remembered on disk (it must survive a Manager restart: with adoptOrphans a service the operator stopped
+// could otherwise be "repaired" by peers after the Manager comes back). Start clears it.
+const OPERATOR_STOPS_FILE = 'peer-repair-stops.json';
+let peerRepairApi = null;   // set once kpelink repair is wired (further down)
+function setOperatorStop(name, stopped) {
+  const svc = SERVICES[name]; if (!svc) return;
+  if (!stopped && !svc.stoppedByOperatorAt) return;          // nothing to clear (every Start passes here)
+  svc.stoppedByOperatorAt = stopped ? Date.now() : 0;
+  try {
+    const all = mgrReadCfg(OPERATOR_STOPS_FILE) || {};
+    if (stopped) all[name] = svc.stoppedByOperatorAt; else delete all[name];
+    mgrWriteJson(mgrCfgFile(OPERATOR_STOPS_FILE), all);
+  } catch (e) { console.error('[manager] operator stop not saved:', e.message); }
+}
+try {
+  const saved = mgrReadCfg(OPERATOR_STOPS_FILE) || {};
+  for (const [name, at] of Object.entries(saved)) if (SERVICES[name] && Number(at) > 0) SERVICES[name].stoppedByOperatorAt = Number(at);
+} catch (_) { /* none saved */ }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // System Requirements — ตรวจเวอร์ชัน + ติดตั้งเอง (cross-platform)
@@ -593,6 +695,83 @@ async function runInstall(tool) {
 }
 
 // ── REST API ──────────────────────────────────────────────────────────────────
+// ── kpelink repair: peers vote "your <svc> looks dead", this Manager re-checks itself before acting (manager/peerRepair.js · docs/PEER-REPAIR-PLAN.md) ──
+const { createPeerRepair, normConfig: peerNormConfig, configProblem: peerConfigProblem, DEFAULTS: PEER_DEFAULTS } = require('./peerRepair');
+function peerAudit(e) {
+  const file = mgrCfgFile('peer-repair-audit.jsonl');
+  try {
+    try { if (fs.statSync(file).size > 512 * 1024) { const keep = fs.readFileSync(file, 'utf8').split('\n').slice(-1000).join('\n'); fs.writeFileSync(file, keep); } } catch (_) { /* no file yet */ }
+    fs.appendFileSync(file, JSON.stringify({ t: new Date().toISOString(), ...e }) + '\n');
+  } catch (err) { console.error('[peer-repair] audit:', err.message); }
+  if (e.kind === 'action' && SERVICES[e.svc]) pushLog(e.svc, `── kpelink repair: ${e.result} (votes ${e.peers.join(', ')} · local: ${e.why}) ──`);
+}
+// "is it really dead HERE": one fresh probe, then the tracker's uninterrupted run of evidence (hung or refused; booting and "unknown" excluded)
+async function peerCheckLocal(svc, c) {
+  if (!HEALTH_NAMES.includes(svc)) return { dead: false, why: `${svc} is not watched here` };
+  const now = await healthProbe(svc);
+  if (now.kind === 'ok') return { dead: false, why: `answers now (${now.why})` };
+  if (now.kind === 'unknown') return { dead: false, why: `cannot tell from here (${now.why})` };
+  const v = healthTracker.view(svc);
+  const out = { dead: true, downMs: healthTracker.deadMs(svc), why: `${now.kind} for ${v.deadSec}s (${now.why})` };
+  // a service the Manager does not run and never saw listening since it started may be booting outside its control: ask for 3x longer
+  if (!SERVICES[svc].proc && !v.seenOpen) out.minDownMs = 3 * (Number(c && c.localDownSec) || 120) * 1000;
+  return out;
+}
+// weigh stations: never restart the backend while a cycle is being recorded (config idleTag e.g. "DATA/CYC_PHASE", idleValue "idle").
+//   Unknown is not idle: a refused read (token), a missing tag or an unreadable answer defers. Only "the backend gives no answer at all"
+//   passes - nothing can be recorded through a backend that does not answer, and the long-window evidence was already required.
+async function peerIdleGate(svc, c) {
+  if (svc !== 'backend' || !c.idleTag) return { ok: true };
+  const cut = c.idleTag.indexOf('/');
+  if (cut <= 0) return { ok: false, why: `idleTag "${c.idleTag}" must be DEVICE/TAG` };
+  const dev = c.idleTag.slice(0, cut); const tag = c.idleTag.slice(cut + 1);
+  const at = (SERVICES.backend.proc && SERVICES.backend._listenAt) || listenTarget(portsMod.ports(), 'backend');
+  const tok = readApiToken();
+  const getValues = (host) => new Promise((resolve) => {
+    const req = http.get({ host, port: at.port, path: '/api/values', timeout: 3000, agent: false,
+      headers: tok.enabled ? { authorization: `Bearer ${tok.token}` } : {} }, (res) => {
+      let b = ''; res.setEncoding('utf8');
+      res.on('data', (d) => { if (b.length < 8 * 1024 * 1024) b += d; });
+      res.on('end', () => { let json = null; try { json = JSON.parse(b); } catch (_) { /* not json */ } resolve({ status: res.statusCode, json }); });
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ status: 0 }); }); req.on('error', () => resolve({ status: 0 }));
+  });
+  let r = { status: 0 };
+  for (const host of loopbackHosts(at.host)) { r = await getValues(host); if (r.status) break; }
+  if (r.status === 0) return { ok: true, why: 'backend gives no answer: nothing can be recorded through it' };
+  if (r.status !== 200 || !r.json) return { ok: false, why: `cannot read ${c.idleTag} (HTTP ${r.status})` };
+  const t = r.json[dev] && r.json[dev].tags && r.json[dev].tags[tag];
+  if (!t || t.value == null) return { ok: false, why: `${c.idleTag} not found` };
+  return String(t.value) === String(c.idleValue) ? { ok: true } : { ok: false, why: `${c.idleTag}=${t.value}` };
+}
+const peerRepair = createPeerRepair({
+  readConfig: () => mgrReadCfg('peer-repair.json') || {},
+  // meant to run: the Manager runs it, or (adoptOrphans) something else started it (an orphan the Manager never spawned) - never when an
+  // operator stopped/killed it here or the crash-loop guard gave up on it
+  wanted: (svc, c) => {
+    const s = SERVICES[svc]; if (!s || s.gaveUpAt) return false;
+    return !!s.wantRunning || (!!(c && c.adoptOrphans) && !s.stoppedByOperatorAt);
+  },
+  shuttingDown: () => _mgrShuttingDown,
+  checkLocal: peerCheckLocal, idleGate: peerIdleGate, restart: (svc) => restartService(svc, { by: 'peer' }), budget: restartBudget,
+  log: (m) => console.log(m), notify, audit: peerAudit,
+});
+peerRepairApi = peerRepair;
+// before the 8 MB body parser and the token guard on purpose: 4 KB limit, authenticated by its own HMAC (repair key), nothing else is reachable here
+const peerVoteJson = express.json({ limit: '4kb' });
+app.post('/api/peer-repair/vote', (req, res, next) => peerVoteJson(req, res, (err) => {
+  if (!err) return next();
+  res.status(err.status === 413 ? 413 : 400).json({ ok: false, code: err.status === 413 ? 'too-large' : 'bad-request', message: 'malformed vote' });
+}), async (req, res) => {
+  try {
+    const r = await peerRepair.vote(req.body, { ip: req.socket.remoteAddress, bytes: Number(req.headers['content-length'] || 0) });
+    res.status(r.status || 200).json(r);
+  } catch (e) {
+    console.error('[peer-repair] vote:', e.message);
+    res.status(500).json({ ok: false, code: 'error', message: 'vote not processed' });
+  }
+});
+
 app.use(express.json({ limit: '8mb' }));   // เผื่อ logo data URL
 
 // API token guard — บังคับ auth สำหรับ request "ข้ามเครื่อง" (ยกเว้น loopback)
@@ -624,6 +803,30 @@ function readMgrBranding() {
   return r ? { ...MGR_BRANDING_DEFAULT, ...r } : { ...MGR_BRANDING_DEFAULT };
 }
 // ── License (Pi-only activation · ดู docs/LICENSING.md) — GET status · POST install (USB/upload base64) ──
+// kpelink repair status / config (behind the token guard; the key is never returned)
+app.get('/api/peer-repair/status', (_req, res) => {
+  const here = {};
+  for (const name of HEALTH_NAMES) here[name] = { ...healthTracker.view(name), managed: !!SERVICES[name].proc,
+    stoppedByOperator: !!SERVICES[name].stoppedByOperatorAt, gaveUp: !!SERVICES[name].gaveUpAt };
+  res.json({ ok: true, ...peerRepair.status(), here });
+});
+app.get('/api/peer-repair/config', (_req, res) => {
+  const { key, ...rest } = peerNormConfig(mgrReadCfg('peer-repair.json') || {});
+  res.json({ ok: true, config: { ...rest, keySet: !!key } });
+});
+app.put('/api/peer-repair/config', (req, res) => {
+  const b = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+  const unknown = Object.keys(b).filter((k) => !(k in PEER_DEFAULTS));
+  if (unknown.length) return res.status(400).json({ ok: false, error: 'unknown fields: ' + unknown.join(', ') });
+  const next = { ...(mgrReadCfg('peer-repair.json') || {}), ...b };
+  if (next.enabled) {
+    const problem = peerConfigProblem(peerNormConfig(next));
+    if (problem) return res.status(400).json({ ok: false, error: problem });
+  }
+  try { mgrWriteJson(mgrCfgFile('peer-repair.json'), next, { mode: 0o600 }); } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+  const { key, ...rest } = peerNormConfig(next);
+  res.json({ ok: true, config: { ...rest, keySet: !!key } });
+});
 app.get('/api/license', (_req, res) => res.json(licenseStatus()));
 app.post('/api/license', (req, res) => {
   const b64 = (req.body && (req.body.license || req.body.key || req.body.b64)) || '';
@@ -1002,12 +1205,27 @@ app.post('/api/:name/stop', (req, res) => {
 
 // restart = ตัด ref ตัวเก่าทิ้ง (กัน startService ติด early-return "Already running") แล้ว
 // startService จะ killPort พอร์ตนั้นก่อน spawn (ฆ่าตัวเก่า+orphan ตามพอร์ต) → start ใหม่ติดครั้งเดียว
+async function restartService(name, opts = {}) {
+  const svc = SERVICES[name];
+  if (!svc) return { ok: false, msg: 'Unknown service' };
+  const stopGen = svc._stopGen || 0;
+  const p = svc.proc;
+  if (p) {
+    try { p.removeAllListeners('exit'); } catch (_) {}
+    svc.proc = null;
+    // a hung child may not hold the port any more (or killPort may not find it), so kill the tracked process itself and wait for it
+    if (p.exitCode === null && p.signalCode === null) {
+      const gone = new Promise((r) => p.once('exit', r));
+      try { p.kill('SIGKILL'); } catch (_) {}
+      await Promise.race([gone, new Promise((r) => setTimeout(r, 3000))]);
+    }
+  }
+  return startService(name, { ...opts, expectStopGen: stopGen });   // killPort(port) ฆ่าตัวเก่าตามพอร์ต (รวม orphan) + spawn ใหม่ · Stop ระหว่างรอ = ยกเลิก
+}
 app.post('/api/:name/restart', async (req, res) => {
   const { name } = req.params;
-  const svc = SERVICES[name];
-  if (!svc) return res.status(404).json({ error: 'Unknown service' });
-  if (svc.proc) { try { svc.proc.removeAllListeners('exit'); } catch (_) {} svc.proc = null; }
-  const r = await startService(name);   // killPort(port) ฆ่าตัวเก่าตามพอร์ต + spawn ใหม่ (รอจน spawn เสร็จ)
+  if (!SERVICES[name]) return res.status(404).json({ error: 'Unknown service' });
+  const r = await restartService(name);
   res.json({ ok: true, restarting: name, ...r });
 });
 
@@ -1025,6 +1243,9 @@ app.post('/api/port/:port/kill', async (req, res) => {
         svc.wantRunning = false;
         if (svc._respawnTimer) { clearTimeout(svc._respawnTimer); svc._respawnTimer = null; }
         if (svc.proc) svc.proc = null;
+        const name = Object.keys(SERVICES).find((k) => SERVICES[k] === svc);
+        svc._stopGen = (svc._stopGen || 0) + 1;
+        if (name) setOperatorStop(name, true);   // kpelink repair must not bring back what an operator killed
       }
     }
     res.json({ ok: true, ...result });

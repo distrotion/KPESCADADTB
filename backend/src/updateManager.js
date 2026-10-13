@@ -31,6 +31,7 @@ function allowedPath(rel) {
   if (rel.includes('..') || rel.startsWith('/')) return false;         // path traversal
   const base = rel.split('/').pop();
   if (RUNTIME_FILE.has(base)) return false;                            // runtime/secret เด็ดขาด (แม้อยู่ใน manager/)
+  if (base.startsWith('peer-repair')) return false;                   // kpelink repair: key/name/peers + audit of this machine
   if (WL_FILE.has(rel)) return true;
   return WL_PREFIX.some((p) => rel.startsWith(p));
 }

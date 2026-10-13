@@ -173,13 +173,20 @@ async function mongoPing(conn) {
 
 // ── SQLite (node:sqlite / better-sqlite3 ผ่าน sqliteDriver) — ไฟล์ · sync→async · cache handle ต่อ path ──
 const _sqliteHandles = new Map();   // absPath → handle
+// absolute file of a sqlite connection (relative = under the data dir) · null when none is set
+function sqlitePath(conn) {
+  const path = require('path');
+  let p = conn && (conn.path || conn.file || conn.database);
+  if (!p) return null;
+  if (!path.isAbsolute(p)) { try { p = path.join(require('./csvUtil').getBase(), p); } catch (_) {} }
+  return p;
+}
 function _sqliteOpen(conn) {
   const sqlite = require('./sqliteDriver');
   const path = require('path');
   const fs = require('fs');
-  let p = conn.path || conn.file || conn.database;
+  const p = sqlitePath(conn);
   if (!p) throw new Error('[DB:sqlite] ต้องระบุ path ไฟล์');
-  if (!path.isAbsolute(p)) { try { p = path.join(require('./csvUtil').getBase(), p); } catch (_) {} }
   let h = _sqliteHandles.get(p);
   if (!h) {
     try { fs.mkdirSync(path.dirname(p), { recursive: true }); } catch (_) {}   // สร้างโฟลเดอร์แม่ถ้ายังไม่มี (idempotent · ไม่ทับ)
@@ -198,6 +205,16 @@ async function sqliteQuery(conn, sql, params = []) {
   if (!(params && params.length)) { h.exec(sqlS); return []; }                           // DDL (อาจหลาย statement)
   h.prepare(sqlS).run(...(params || []));                                                // INSERT/UPDATE/DELETE
   return [];
+}
+
+// close the cached handle of one sqlite file (idle rollover segments, before deleting a file) - the next query reopens it
+function sqliteClose(connOrPath) {
+  const p = typeof connOrPath === 'string' ? connOrPath : sqlitePath(connOrPath);
+  const h = p && _sqliteHandles.get(p);
+  if (!h) return false;
+  try { h.close(); } catch (_) {}
+  _sqliteHandles.delete(p);
+  return true;
 }
 
 // ── ปิด/ทิ้ง pool ของ connection หนึ่ง (เรียกตอน update/remove เพื่อกัน stale credential) ──
@@ -230,6 +247,8 @@ module.exports = {
   mysql: mysqlQuery,
   mongo: mongoQuery,
   sqlite: sqliteQuery,
+  sqlitePath,
+  sqliteClose,
   mongoPing,
   closeConn,
   closeAll,

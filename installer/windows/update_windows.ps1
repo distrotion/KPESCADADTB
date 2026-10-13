@@ -81,7 +81,7 @@ Write-Host "[3/4] replacing program ..."
 # /XD: data dirs + service (running/locked) - online also keeps existing node_modules
 $xd = @("$Src\config","$Src\layout","$Src\datalog","$Root\config","$Root\layout","$Root\datalog","$Root\service")
 if (-not $offline) { $xd += @("$Root\backend\node_modules","$Root\manager\node_modules") }
-$xf = @('ports.json','api-token.json','access-gate.json','branding.json')
+$xf = @('ports.json','api-token.json','access-gate.json','branding.json','peer-repair*')
 $rcArgs = @($Src, $Root, '/E', '/NFL','/NDL','/NJH','/NJS','/NP','/R:1','/W:1','/XD') + $xd + @('/XF') + $xf
 & robocopy @rcArgs | Out-Null
 if ($LASTEXITCODE -ge 8) { Write-Error "robocopy failed (code $LASTEXITCODE)"; Remove-Item $tmpx -Recurse -Force; exit 1 }

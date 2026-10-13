@@ -52,7 +52,8 @@ app.use('/api', (req, res, next) => {
   //   auth ของ hook ใช้ per-script API key ที่ header แทน — ดู /api/hooks/:path ด้านล่าง)
   if (!API_TOKEN || req.path === '/health' || req.path === '/license' || req.path === '/time' || req.path.startsWith('/hooks/')
       || req.path === '/kpenetwork/directory' || req.path === '/kpenetwork/values'
-      || req.path.startsWith('/kpenetwork/plcmem/')) return next();  // /time = peer time-sync (เวลา · ไม่ sensitive) · directory/values/plcmem ข้าม node = ใช้ requireApiKey (checkApiKey) แทน (§9.1 · T8)
+      || req.path.startsWith('/kpenetwork/plcmem/')
+      || (req.method === 'POST' && (req.path === '/kpenetwork/witness' || req.path === '/kpenetwork/services'))) return next();  // kpelink reports: HMAC-signed with the mesh key · /time = peer time-sync (เวลา · ไม่ sensitive) · directory/values/plcmem ข้าม node = ใช้ requireApiKey (checkApiKey) แทน (§9.1 · T8)
   if (_tokenOk(_bearer(req))) return next();
   res.status(401).json({ error: 'unauthorized (API token required)' });
 });
@@ -207,7 +208,10 @@ const dbManager = new DatabaseManager();
 const deviceLogger = new DeviceLogger(dbManager);
 
 // chart history store (เก็บ/ดึงประวัติค่า tag สำหรับ widget Chart โหมด Database)
-const chartStore = new ChartStore(dbManager);
+//   sqlite: rows go to month files (rollover · datalogStorage.js) so no single file grows to many GB (.34 2026-10-13)
+const { DatalogStorage, startStorageMonitor } = require('./datalogStorage');
+const datalogStorage = new DatalogStorage({ dbManager });
+const chartStore = new ChartStore(dbManager, { storage: datalogStorage });
 
 // named datalog registry (สร้างชื่อ log ก่อน → backend เก็บให้ที่เดียว → อ้างชื่อไปแสดงได้หลายที่)
 const datalogManager = new DatalogManager(engine, chartStore, dbManager);
@@ -494,6 +498,24 @@ const alarmEngine = new AlarmEngine(engine, (evt) => {
   // alarm trigger สำหรับ script
   if (evt.type === 'alarm_event' && scriptEngine) scriptEngine.onAlarmEvent(evt);
 }, dbManager);
+
+// Pi mesh centre (docs/PI-MESH-RESILIENCE-PLAN.md): who is alive on which route. Off unless config/mesh.json enables it.
+//   Routes: POST /api/kpenetwork/witness (HMAC-signed neighbour reports) · GET /api/kpenetwork/liveness · mesh-config
+let meshCenter = null;
+try {
+  meshCenter = require('./mesh/meshRuntime').startMeshCenter({ app, engine, datalogManager, alarmEngine, activityLog, log: (m) => console.log(m) });
+} catch (e) { console.error('[mesh] not started:', e && e.message); }
+//   Pi side: BLE beacon + neighbour table + witness reports to the centre. Off unless config/mesh.json enables node.
+let meshNode = null;
+try {
+  meshNode = require('./mesh/meshRuntime').startMeshNode({ app, engine, dbManager, log: (m) => console.log(m),
+    // beacon flag "clock checked lately": this node is the time master, or its last sync with the master was within 24 h and not rejected
+    clockOk: () => { const s = timeSyncManager.getStatus(); if (!s.enabled) return false; if (s.role === 'master') return true;
+      return s.lastSync > 0 && Date.now() - s.lastSync < 24 * 3600 * 1000 && ['in-sync', 'os-set', 'app-offset', 'throttled'].includes(s.lastResult); },
+    // clock from neighbours when the time master cannot be reached (kpelink · mesh/meshTime.js); applied with the time sync manager's own guards
+    peerTime: { needs: (staleMs) => timeSyncManager.needsPeerTime(staleMs), apply: (driftMs, meta) => timeSyncManager.applyPeerTime(driftMs, meta),
+      now: () => timeSyncManager.correctedNow() } });
+} catch (e) { console.error('[mesh] node not started:', e && e.message); }
 
 // WebSocket broadcast
 function broadcast(data) {
@@ -1548,13 +1570,19 @@ app.get('/api/fs/list', (req, res) => {
 // ── Save / Load project (export/import ทั้ง base dir เป็น zip) ─────────────────────
 const crypto = require('crypto');
 const KPE_MAGIC = Buffer.from('KPEENC1\0');   // header ไฟล์เข้ารหัส (.kpe)
-// มาส์ก field ลับใน JSON (recursive) — คีย์ที่เข้าข่าย pass/secret/salt/token
+// มาส์ก field ลับใน JSON (recursive) — คีย์ที่เข้าข่าย pass/secret/salt/token/apiKey · และ "key" ที่ค่าเป็น hex ยาว (mesh/repair key)
+//   ("key" ธรรมดาเป็นชื่อ field ของ line recorder / ช่วงค่าไฟ / path ของ tls.key — ห้ามมาส์ก)
+function _isSecretField(k, v) {
+  if (!(typeof v === 'string' || v == null)) return false;
+  if (/pass|secret|salt|token|apikey/i.test(k)) return true;
+  return /^key$/i.test(k) && typeof v === 'string' && /^[0-9a-f]{32,}$/i.test(v);
+}
 function _deepMaskSecrets(obj) {
   if (Array.isArray(obj)) return obj.map(_deepMaskSecrets);
   if (obj && typeof obj === 'object') {
     const out = {};
     for (const [k, v] of Object.entries(obj)) {
-      out[k] = /pass|secret|salt|token/i.test(k) && (typeof v === 'string' || v == null) ? '' : _deepMaskSecrets(v);
+      out[k] = _isSecretField(k, v) ? '' : _deepMaskSecrets(v);
     }
     return out;
   }
@@ -1601,6 +1629,9 @@ function _walkRel(dir, prefix) {    // เดินไฟล์ recursive → [{
   return out;
 }
 
+// kpelink repair files belong to one machine (its repair key, its own name, peers pinned to addresses, its audit): never exported,
+// never imported - a copy on another machine would vote / be voted for under the wrong identity
+const _PROJECT_NEVER = /^config\/manager\/peer-repair[^/]*$/;
 app.get('/api/project/export', (req, res) => {
   try {
     const base = csvUtil.getBase();
@@ -1613,7 +1644,7 @@ app.get('/api/project/export', (req, res) => {
     if (fs.existsSync(cfgDir)) {
       for (const f of _walkRel(cfgDir, '')) {
         const rel = `config/${f.name}`;
-        if (!_projInclude(rel, sel)) continue;
+        if (_PROJECT_NEVER.test(rel) || !_projInclude(rel, sel)) continue;
         let content = fs.readFileSync(f.abs);
         if (secrets === 'mask' && f.name.endsWith('.json')) {
           try { content = Buffer.from(JSON.stringify(_deepMaskSecrets(JSON.parse(content.toString('utf8'))), null, 2)); }
@@ -1685,6 +1716,7 @@ app.post('/api/project/import', express.raw({ type: () => true, limit: '200mb' }
 
     // ports.json อยู่ที่ระดับ root ของ zip (host config นอก base) — ดึงออกก่อน extract
     //   ไม่ให้ extractAllTo เขียนทับ ports จริงโดยอัตโนมัติ (กู้คืนเฉพาะเมื่อ restorePorts)
+    for (const e of entries) if (_PROJECT_NEVER.test(e.entryName)) { try { zip.deleteFile(e.entryName); } catch (_) {} }
     const portsEntry = entries.find((e) => e.entryName === 'ports.json');
     const portsBuf = portsEntry ? portsEntry.getData() : null;
     if (portsEntry) { try { zip.deleteFile('ports.json'); } catch (_) {} }
@@ -1706,6 +1738,7 @@ app.post('/api/project/import', express.raw({ type: () => true, limit: '200mb' }
         if (fs.existsSync(dir)) snap.addLocalFolder(dir, d);
       }
       if (portsCfg.FILE && fs.existsSync(portsCfg.FILE)) snap.addLocalFile(portsCfg.FILE, '');
+      for (const e of snap.getEntries()) if (_PROJECT_NEVER.test(e.entryName)) snap.deleteFile(e.entryName);   // import never touches them; a snapshot must not carry the key into datalog/
       const snapDir = path.join(base, 'datalog', '_pre-import');
       fs.mkdirSync(snapDir, { recursive: true });
       snap.writeZip(path.join(snapDir, `before-import-${Date.now()}.zip`));
@@ -1798,6 +1831,22 @@ app.get('/api/chart/export', (req, res) => {
 // PUT    /api/datalogs/:id        (patch)
 // DELETE /api/datalogs/:id
 // GET    /api/datalogs/:id/history?windowSec=&limit=  → { ok, log, rows }
+// datalog storage: sqlite rollover settings + file sizes · PUT { rollover: { enabled, maxMB }, warnMB }
+app.get('/api/datalog-storage', (_req, res) => {
+  const conns = [...new Set(datalogManager.logs.filter((l) => l.storage === 'database' && l.dbConn).map((l) => l.dbConn))];
+  const status = {};
+  for (const c of conns) { const st = datalogStorage.status(c); if (st) status[c] = st; }
+  res.json({ ok: true, config: datalogStorage.config(), status });
+});
+app.put('/api/datalog-storage', (req, res) => {
+  const b = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : null;
+  if (!b || Object.keys(b).some((k) => k !== 'rollover' && k !== 'warnMB')) return res.status(400).json({ ok: false, error: 'body: { rollover: { enabled, maxMB }, warnMB }' });
+  try {
+    const config = datalogStorage.save(b);
+    logActivity(req, { category: 'config', action: 'datalog_storage', target: 'datalog-storage', detail: JSON.stringify(config) });
+    res.json({ ok: true, config });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
 app.get('/api/datalogs', (req, res) => {
   res.json({ ok: true, logs: datalogManager.list() });
 });
@@ -2782,6 +2831,7 @@ function startServicesOnce() {
   scriptEngine.start();
   alarmEngine.start();
   try { datalogManager.start(); } catch (e) { console.error('[datalog] start:', e && e.message); }
+  try { startStorageMonitor({ storage: datalogStorage, datalogManager, engine, alarmEngine, log: (m) => console.log(m) }); } catch (e) { console.error('[datalog] storage monitor:', e && e.message); }
   try { queryBufferManager.start(); } catch (e) { console.error('[querybuffer] start:', e && e.message); }
   try { powerManager.start(); } catch (e) { console.error('[power] start:', e && e.message); }
   try { timeSyncManager.start(); } catch (e) { console.error('[timesync] start:', e && e.message); }

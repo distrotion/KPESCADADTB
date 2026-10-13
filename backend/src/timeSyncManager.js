@@ -135,6 +135,46 @@ class TimeSyncManager {
     } catch (e) { this.status.lastResult = 'error'; this.status.lastError = e.message; }
   }
 
+  // ── clock from neighbours (kpelink · backend/src/mesh/meshTime.js) ──────────────
+  // Only when the master cannot be reached right now AND there is no verified sync in this run (lastSync 0 = typically just booted after a
+  // power cut with the network down) or the last one is older than staleMs. A peer correction never touches lastSync/lastResult/_firstDone:
+  // it is not "verified" (so this station does not advertise clockOk and time never travels two hops), and the master's first answer may
+  // still make a big correction if the neighbours were wrong.
+  needsPeerTime(staleMs = 6 * 3600 * 1000) {
+    if (!this.config.enabled || this.config.role !== 'follower') return false;
+    if (!['error', 'idle'].includes(this.status.lastResult)) return false;
+    return !this.status.lastSync || Date.now() - this.status.lastSync > staleMs;
+  }
+
+  async applyPeerTime(driftMs, { from = [], spreadMs = null, staleMs } = {}) {
+    const now = Date.now();
+    const peer = { at: now, from, driftMs: Math.round(driftMs), spreadMs, result: '' };
+    this.status.peer = peer;
+    const done = (result, error) => { peer.result = result; if (error) peer.error = error; return peer; };
+    if (!Number.isFinite(driftMs)) return done('rejected-insane', 'drift is not a number');
+    if (!this.needsPeerTime(staleMs)) return done('not-needed');
+    const target = now + driftMs;
+    if (!(target > MIN_VALID && target < now + MAX_AHEAD_MS)) return done('rejected-insane', 'time from neighbours out of range: ' + new Date(target).toISOString());
+    if (Math.abs(driftMs) <= this.config.thresholdMs) return done('in-sync');
+    if (this._lastSetTs && now - this._lastSetTs < this.config.minIntervalSec * 1000) return done('throttled');
+    if (Math.abs(driftMs) > BIG_JUMP_MS && (this._firstDone || !this.config.firstSyncAllowBigJump)) {
+      this._log('reject big-jump from neighbours ' + Math.round(driftMs / 1000) + 's');
+      return done('rejected-bigjump', `correction over 1 h (${Math.round(driftMs / 1000)}s) after a verified sync - not applied automatically`);
+    }
+    try {
+      if (this.config.setClock) {
+        await this._setSystemClock(target);
+        this.offsetMs = 0; done('os-set');
+        this._log(`ตั้งนาฬิกา OS จากเพื่อน (kpelink ${from.join('+')}) → ${new Date(target).toISOString()} (drift ${Math.round(driftMs)}ms)`);
+      } else {
+        this.offsetMs = Math.round(driftMs); done('app-offset');
+        this._log(`offset แอปจากเพื่อน (kpelink ${from.join('+')}) ${this.offsetMs}ms`);
+      }
+      this._lastSetTs = Date.now();
+      return peer;
+    } catch (e) { return done('error', e.message); }
+  }
+
   // ── ตั้งนาฬิกา OS (platform-aware) ──────────────────────────────────────────────
   _setSystemClock(epochMs) {
     return new Promise((resolve, reject) => {

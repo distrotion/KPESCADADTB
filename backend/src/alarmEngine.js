@@ -157,10 +157,11 @@ class AlarmEngine {
     const high = (sub === 'hi' || sub === 'hihi');
     if (high) {
       // active เมื่อ >= setpoint ; ปลด (hysteresis) เมื่อ < setpoint - deadband
-      return rt.rawActive ? (v > sp - dband) : (v >= sp);
+      //   keep with >= (not >): with deadband 0 a value resting on the setpoint used to raise/clear every pass (test/alarm-limit-hysteresis.test.js)
+      return rt.rawActive ? (v >= sp - dband) : (v >= sp);
     } else {
       // lo / lolo : active เมื่อ <= setpoint ; ปลดเมื่อ > setpoint + deadband
-      return rt.rawActive ? (v < sp + dband) : (v <= sp);
+      return rt.rawActive ? (v <= sp + dband) : (v <= sp);
     }
   }
 

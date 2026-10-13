@@ -10,6 +10,7 @@ node_modules/
 /licenses/
 /ports.json
 /manager/api-token.json
+/manager/peer-repair*
 /manager/access-gate.json
 /manager/branding.json
 **/license.key

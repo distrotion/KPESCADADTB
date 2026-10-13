@@ -202,6 +202,75 @@ function mirrorStatus(state, readTag, setTag, deviceId, target, opts = {}) {
 }
 
 /**
+ * netStatusLed(key, opts) - status lamp so the people at the station can see, without asking anyone,
+ * whether the station is still recording and whether the network is up.
+ *   green steady   recording OK and the centre is reachable
+ *   yellow blink   recording OK but the centre is NOT reachable (rows are queued in sqlite, nothing is lost)
+ *   red steady     cannot record
+ *
+ *   opts: {
+ *     online:    'dev/tag'  centre reachability (e.g. 'CENTER/__online' of the kpenetwork peer device)
+ *     recording: 'dev/tag'  "the station can record" (e.g. 'USB_LOADCELL/__online')
+ *     green, yellow, red: 'dev/tag' GPIO tags (any may be omitted)
+ *     single:    'dev/tag'  one lamp only: steady = OK, 1 Hz blink = offline, 4 Hz blink = cannot record
+ *     blinkMs=500    half period of the yellow / offline blink (the script interval must be <= this)
+ *     holdOfflineSec=5   the centre must be unreachable this long before yellow (ignores 1-2 s hiccups)
+ *     activeLow=false    invert the written value (lamp wired active-low)
+ *   }
+ *   Only the tags named in opts are ever written, and only when their value changes.
+ *   Returns { state: 'green'|'yellow'|'red', outputs: {green,yellow,red,single}, wrote: n }.
+ *   Never use a GPIO that drives a relay or any machine output: this is an indicator only.
+ */
+function truthy(raw) {
+  return raw === true || raw === '1' || raw === 'true' || (typeof raw === 'number' && raw !== 0);
+}
+function netLedState(recording, online) {
+  if (!recording) return 'red';
+  return online ? 'green' : 'yellow';
+}
+function netStatusLed(state, now, readTag, setTag, key, opts = {}) {
+  const st = slot(state, 'netled', key == null ? '_' : String(key));
+  const rd = (ref) => {
+    const t = splitTarget(ref);
+    if (!t || !readTag) return null;
+    return readTag(t[0], t[1]);
+  };
+  const recording = truthy(rd(opts.recording));
+  const onlineNow = truthy(rd(opts.online));
+  const holdMs = Math.max(0, (num(opts.holdOfflineSec) ?? 5) * 1000);
+  // online switches on immediately; it only switches off after holdOfflineSec of continuous silence
+  if (onlineNow) { st.offSince = null; st.online = true; }
+  else {
+    if (st.offSince == null) st.offSince = now;
+    if (st.online == null) st.online = false;                       // first call: show the truth at once
+    else if (now - st.offSince >= holdMs) st.online = false;
+  }
+  const online = st.online === true;
+  const stateName = netLedState(recording, online);
+
+  const blinkMs = Math.max(50, num(opts.blinkMs) ?? 500);
+  const phase = Math.floor(now / blinkMs) % 2 === 0;                // true = lit half of the blink
+  const fastPhase = Math.floor(now / Math.max(50, Math.floor(blinkMs / 4))) % 2 === 0;
+  const out = {
+    green:  stateName === 'green' ? 1 : 0,
+    yellow: stateName === 'yellow' ? (phase ? 1 : 0) : 0,
+    red:    stateName === 'red' ? 1 : 0,
+    single: stateName === 'green' ? 1 : (stateName === 'yellow' ? (phase ? 1 : 0) : (fastPhase ? 1 : 0)),
+  };
+  const lo = !!opts.activeLow;
+  let wrote = 0;
+  for (const pin of ['green', 'yellow', 'red', 'single']) {
+    if (!opts[pin]) continue;
+    const t = splitTarget(opts[pin]);
+    if (!t || !setTag) continue;
+    const v = lo ? 1 - out[pin] : out[pin];
+    if (st['last_' + pin] !== v) { setTag(t[0], t[1], v); st['last_' + pin] = v; wrote++; }
+  }
+  st.state = stateName;
+  return { state: stateName, outputs: out, wrote };
+}
+
+/**
  * สร้างชุด preset ผูกกับ state ของ script หนึ่ง ๆ
  *   now = ฟังก์ชันคืน ms epoch (แยกออกมาเพื่อ test แทนเวลาได้ · default = Date.now)
  *   io  = { tag(dev,id)→value, setTag(dev,id,value) } — ให้ preset อ่าน/เขียน tag เองได้
@@ -217,7 +286,8 @@ function createPresets(state, now, io) {
     weighCycle:   (key, value, opts) => weighCycle(st, clk(), key, value, opts),
     recordQueue:  (key, opts) => recordQueue(st, key, opts),
     mirrorStatus: (deviceId, target, opts) => mirrorStatus(st, readTag, setTag, deviceId, target, opts),
+    netStatusLed: (key, opts) => netStatusLed(st, clk(), readTag, setTag, key, opts),
   };
 }
 
-module.exports = { createPresets, weighCycle, recordQueue, mirrorStatus };
+module.exports = { createPresets, weighCycle, recordQueue, mirrorStatus, netStatusLed, netLedState };

@@ -15,7 +15,7 @@ const csv = require('./csvUtil');
  *   - id = คีย์ table/CSV-prefix (alnum/underscore, gen จาก name) — เสถียร ไม่เปลี่ยนตามชื่อ
  *   - storage เลือกได้ต่อ log (default csv) · database ต้องมี dbConn ไม่งั้น fallback csv
  *   - sampler ต่อ log: ทุก sampleMs อ่านค่า series ผ่าน tagEngine → chartStore (csv/db)
- *   - retention: prune ข้อมูลเก่ากว่า retentionDays (0 = เก็บตลอด) ทุกชั่วโมง + ตอน start
+ *   - retention: prune ข้อมูลเก่ากว่า retentionDays (0 = เก็บตลอด) ทุกชั่วโมง + 3 นาทีหลัง start (bounded steps · yield)
  *
  * persist: <base>/config/datalogs.json (atomic write — B3 กันไฟดับ)
  */
@@ -25,8 +25,10 @@ const MAX_SAMPLE_MS = 3600000;
 const DEFAULT_SAMPLE_MS = 1000;
 const DEFAULT_RETENTION = 30;          // วัน (0 = เก็บตลอด)
 const PRUNE_INTERVAL_MS = 3600000;     // prune ทุก 1 ชั่วโมง
+const PRUNE_BOOT_DELAY_MS = 180000;    // first prune 3 min after start: never on the way to "Backend running" (.34 2026-10-13)
 const FLUSH_MS = 5000;                  // batch: flush CSV ที่สะสม ทุก 5 วิ (ลด file-write → ลด EDR/CPU บน Windows)
 const NOTE_DEVICE = '__note__';        // device พิเศษสำหรับ annotation (comment พิมพ์เอง) — เก็บใน value_text
+const NOTE_LIMIT = 50000;   // annotations are never downsampled
 
 const clampInt = (v, lo, hi, def) => {
   const n = Number(v);
@@ -42,6 +44,9 @@ class DatalogManager {
     this.logs = [];                  // นิยาม log (persist)
     this._timers = new Map();        // id -> sampler interval handle
     this._pruneTimer = null;
+    this._pruneBootTimer = null;
+    this._pruning = false;
+    this.pruneDelayMs = PRUNE_BOOT_DELAY_MS;
     this._started = false;
     this._changeIndex = new Map();   // 'device/tag' -> [logId] (logs ที่ onChange) · เร็วเวลา tag เปลี่ยน
     this._lastChange = new Map();    // 'logId|device/tag' -> {value, ts} (dedup/deadband/throttle)
@@ -196,7 +201,9 @@ class DatalogManager {
     this._lastChange.clear();   // เริ่มใหม่ → ค่าแรกของแต่ละ series หลัง start จะถูก log
     for (const log of this.logs) this._arm(log);
     this._pruneTimer = setInterval(() => this._pruneAll(), PRUNE_INTERVAL_MS);
-    this._pruneAll();   // prune ตอน boot ด้วย
+    if (this._pruneTimer && typeof this._pruneTimer.unref === 'function') this._pruneTimer.unref();
+    this._pruneBootTimer = setTimeout(() => { this._pruneBootTimer = null; this._pruneAll(); }, this.pruneDelayMs);   // prune ตอน boot (หน่วงไว้)
+    if (this._pruneBootTimer && typeof this._pruneBootTimer.unref === 'function') this._pruneBootTimer.unref();
     // batch flush timer — เขียน CSV ที่สะสมเป็นช่วง (ลด file-write บน Windows/EDR)
     if (this._flushTimer) clearInterval(this._flushTimer);
     this._flushTimer = setInterval(() => this._flushAll(), FLUSH_MS);
@@ -207,6 +214,7 @@ class DatalogManager {
     this._started = false;
     for (const id of [...this._timers.keys()]) this._disarm(id);
     if (this._pruneTimer) { clearInterval(this._pruneTimer); this._pruneTimer = null; }
+    if (this._pruneBootTimer) { clearTimeout(this._pruneBootTimer); this._pruneBootTimer = null; }
     if (this._flushTimer) { clearInterval(this._flushTimer); this._flushTimer = null; }
     this._flushAll();   // เขียนที่ค้างก่อนหยุด (ไม่ตกหล่น)
   }
@@ -277,7 +285,7 @@ class DatalogManager {
     if (!samples || samples.length === 0) return;
     try {
       if (log.storage === 'database' && log.dbConn) {
-        Promise.resolve(this.chartStore.log(log.dbConn, log.id, samples)).catch(() => {});   // fire-and-forget (network · ไม่ใช่ file-scan)
+        Promise.resolve(this.chartStore.log(log.dbConn, log.id, samples, { retentionDays: log.retentionDays })).catch(() => {});   // fire-and-forget (network · ไม่ใช่ file-scan)
       } else if (this._started) {
         // batch CSV: สะสมไว้ flush เป็นช่วง (ลด file-write → ลด EDR scan/CPU บน Windows)
         const buf = this._buf.get(log.id);
@@ -324,13 +332,22 @@ class DatalogManager {
     }
   }
 
+  // one pass at a time (a pass over big tables can outlast the hourly timer) · yield between logs
   async _pruneAll() {
-    for (const log of this.logs) {
-      try {
-        if (log.storage === 'database' && log.dbConn) await this.chartStore.pruneDb(log.dbConn, log.id, log.retentionDays);
-        else this.chartStore.pruneCsv(log.id, log.retentionDays);
-      } catch (_) {}
-    }
+    if (this._pruning) return;
+    this._pruning = true;
+    try {
+      // sqlite rollover: whole month files past their retention first (no row deletes needed for those)
+      const conns = new Set(this.logs.filter((l) => l.storage === 'database' && l.dbConn).map((l) => l.dbConn));
+      for (const conn of conns) { try { if (this.chartStore.sweepFiles) this.chartStore.sweepFiles(conn); } catch (_) {} }
+      for (const log of [...this.logs]) {
+        try {
+          if (log.storage === 'database' && log.dbConn) await this.chartStore.pruneDb(log.dbConn, log.id, log.retentionDays);
+          else this.chartStore.pruneCsv(log.id, log.retentionDays);
+        } catch (_) {}
+        await new Promise((r) => setImmediate(r));
+      }
+    } finally { this._pruning = false; }
   }
 
   // ── อ่านประวัติของ log (อ้างด้วย id) → ใช้ series + storage ของ log เอง ──────────
@@ -342,21 +359,28 @@ class DatalogManager {
     const windowSec = opts.windowSec;
     const limit = opts.limit;
     const range = (Number(opts.fromMs) > 0) ? { fromMs: Number(opts.fromMs), toMs: Number(opts.toMs) || 0 } : null;
+    // whole window: rows over `limit` are downsampled (min/max per bucket + text changes), never cut off
     let rows = [];
+    let sampled = false;
+    let truncated = false;
     if (series.length) {
-      rows = (log.storage === 'database' && log.dbConn)
-        ? await this.chartStore.history(log.dbConn, log.id, series, windowSec, limit, range)
-        : this.chartStore.historyCsv(log.id, series, windowSec, limit, range);
+      const res = (log.storage === 'database' && log.dbConn)
+        ? await this.chartStore.historyWindow(log.dbConn, log.id, series, windowSec, limit, range)
+        : this.chartStore.historyCsvWindow(log.id, series, windowSec, limit, range);
+      rows = res.rows;
+      sampled = !!res.sampled;
+      truncated = !!res.truncated;
     }
     // annotation (comment พิมพ์เอง · device='__note__') — ดึงแยกแล้วส่งให้กราฟวาด marker
+    //   never downsampled -> always the maximum row limit
     let annotations = [];
     try {
       const notes = (log.storage === 'database' && log.dbConn)
-        ? await this.chartStore.history(log.dbConn, log.id, [{ device: NOTE_DEVICE, tag: '' }], windowSec, limit, range)
-        : this.chartStore.historyCsv(log.id, [{ device: NOTE_DEVICE, tag: '' }], windowSec, limit, range);
+        ? await this.chartStore.history(log.dbConn, log.id, [{ device: NOTE_DEVICE, tag: '' }], windowSec, NOTE_LIMIT, range)
+        : this.chartStore.historyCsv(log.id, [{ device: NOTE_DEVICE, tag: '' }], windowSec, NOTE_LIMIT, range);
       annotations = (notes || []).filter((r) => r.valueText != null).map((r) => ({ ts: r.ts, text: r.valueText }));
     } catch (_) {}
-    return { ok: true, log: { id: log.id, name: log.name, series: log.series, storage: log.storage }, rows, annotations };
+    return { ok: true, log: { id: log.id, name: log.name, series: log.series, storage: log.storage }, rows, annotations, sampled, truncated };
   }
 
   // ── เพิ่มหมายเหตุ (annotation · comment พิมพ์เอง) ณ เวลาหนึ่ง → เก็บเป็น text row (device='__note__') ──
@@ -367,7 +391,7 @@ class DatalogManager {
     const c = String(comment || '').trim();
     if (!c) return { ok: false, error: 'empty comment' };
     const when = Number(ts) > 0 ? Number(ts) : Date.now();
-    try { await this.chartStore.log(log.dbConn, log.id, [{ device: NOTE_DEVICE, tag: '', valueText: c, ts: when }]); }
+    try { await this.chartStore.log(log.dbConn, log.id, [{ device: NOTE_DEVICE, tag: '', valueText: c, ts: when }], { retentionDays: log.retentionDays }); }
     catch (e) { return { ok: false, error: e.message }; }
     return { ok: true, ts: when, comment: c };
   }
