@@ -1,0 +1,7 @@
+{
+  "alarms": [
+    { "id": "temp_high", "name": "อุณหภูมิสูงเกิน", "deviceId": "DEMO01", "tagId": "temp",
+      "condition": ">", "value": 5000, "priority": "high", "enabled": true,
+      "message": "อุณหภูมิสูงเกินกำหนด (demo)" }
+  ]
+}

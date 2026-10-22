@@ -136,6 +136,34 @@ if ($Offline) {
 New-Item -ItemType Directory -Force -Path "$DataDir\config","$DataDir\layout","$DataDir\datalog" | Out-Null
 Write-Host "Data dir: $DataDir"
 
+# -- 3b) carry over runtime files from the old in-place layout (<app>\config, <app>\layout) --
+#   Older installs kept runtime config next to the program. When the data dir moves (e.g. -Instance
+#   -> %ProgramData%\KPE\<name>) everything missing is copied, including sub folders such as
+#   config\lines\*.json and config\line-recorder-instance.json (same recorder id = keeps the line lock).
+#   Incident 2026-10: only some files were carried over by hand -> Line Recorder lost its lines and its
+#   id, and two lines silently stopped recording for 8 days. Existing files are never overwritten.
+#   Runs before the service is touched: if it fails, the install stops and nothing has changed yet.
+function Copy-MissingTree([string]$From, [string]$To) {
+  if (-not (Test-Path $From)) { return 0 }
+  $src = (Resolve-Path $From).Path.TrimEnd('\')
+  $dst = (Resolve-Path $To).Path.TrimEnd('\')
+  if ($src -eq $dst) { return 0 }
+  $n = 0
+  Get-ChildItem $src -Recurse -File -Force | ForEach-Object {
+    $rel = $_.FullName.Substring($src.Length).TrimStart('\')
+    $target = Join-Path $dst $rel
+    if (-not (Test-Path $target)) {
+      New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
+      Copy-Item -LiteralPath $_.FullName -Destination $target
+      Write-Host "  carried over: $rel"
+      $n++
+    }
+  }
+  return $n
+}
+$carried = (Copy-MissingTree (Join-Path $Root 'config') "$DataDir\config") + (Copy-MissingTree (Join-Path $Root 'layout') "$DataDir\layout")
+if ($carried -gt 0) { Write-Host "Carried over $carried file(s) from $Root (existing files kept)" }
+
 # -- 4) Windows Service (WinSW) --------------------------------------------------
 $WinSW = Join-Path $ScriptDir 'WinSW.exe'
 if (-not (Test-Path $WinSW)) { Write-Error "WinSW.exe not found in $ScriptDir (must ship with the installer)"; exit 1 }

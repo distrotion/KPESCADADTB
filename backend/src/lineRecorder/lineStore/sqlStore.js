@@ -292,15 +292,19 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);
   }
 
   // ── Recorder lease lock (HA · 1 owner/line · ตาราง per-line) — เทียบเวลาด้วย now() ของ DB ──
-  async claimLock(line, owner, label) {
+  //   takeoverMs > 0 = owner เดิมเงียบเกินนี้ถือว่าตายแล้ว ยึดต่อได้ (0 = ไม่แย่งเลย · พฤติกรรมเดิม)
+  //   เหตุ: id เครื่องเปลี่ยนตอนย้าย data dir → id เก่าถือ lock ค้างตลอดไป ไลน์ไม่ถูกบันทึก 8 วัน (2026-10)
+  async claimLock(line, owner, label, takeoverMs = 0) {
     const t = this._t(line, 'lock');
+    const stale = Number(takeoverMs) > 0 ? Math.floor(Number(takeoverMs)) : 0;
     const { rows } = await this.pool.query(
       `INSERT INTO ${t} (line, owner, label, heartbeat_ms, updated_at)
        VALUES ($1,$2,$3,(extract(epoch from now())*1000)::bigint,(extract(epoch from now())*1000)::bigint)
        ON CONFLICT (line) DO UPDATE SET owner=$2, label=$3,
          heartbeat_ms=(extract(epoch from now())*1000)::bigint, updated_at=(extract(epoch from now())*1000)::bigint
        WHERE ${t}.owner = $2 OR ${t}.owner IS NULL
-       RETURNING owner`, [line, owner, label]);
+          OR ($4::bigint > 0 AND ${t}.heartbeat_ms < (extract(epoch from now())*1000)::bigint - $4::bigint)
+       RETURNING owner`, [line, owner, label, stale]);
     return rows.length > 0 && rows[0].owner === owner;
   }
   async forceLock(line, owner, label) {

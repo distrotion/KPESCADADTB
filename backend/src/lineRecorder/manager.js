@@ -47,8 +47,29 @@ class LineRecorderManager {
     this._started = false;
     this._onViolation = null;   // hook → alarm (set จาก server)
     this.owned = {};            // line → true(recorder) | false(viewer) — gate poll/flush/sweep
-    this._lockTtlMs = 15000;    // heartbeat เก่าเกินนี้ = owner ถือว่าตาย (เตือน · ไม่แย่งเอง)
+    this._lockTtlMs = 15000;    // heartbeat เก่าเกินนี้ = owner ถือว่าตาย (แสดงสถานะ noRecorder)
+    // owner เงียบเกินนี้ → recorder ยึดต่อเอง (owner ปกติ renew ทุก 5 วิ · รีสตาร์ต service ใช้ไม่กี่วิ)
+    //   เดิมไม่แย่งเลย: id เครื่องเปลี่ยนตอนย้าย data dir แล้ว id เก่าถือ lock ค้าง ไลน์ไม่ถูกบันทึก 8 วัน (2026-10)
+    //   0 = ปิด (กลับไปพฤติกรรมเดิม) · ตั้งได้ที่ env KPE_LR_LOCK_TAKEOVER_MS
+    const tk = Number(process.env.KPE_LR_LOCK_TAKEOVER_MS);
+    this._lockTakeoverMs = Number.isFinite(tk) && tk >= 0 ? tk : 5 * 60 * 1000;
     this._identity = this._loadIdentity();   // { id (stable/machine), label, role: 'recorder'|'viewer' }
+    this._warnLegacyLines();
+  }
+
+  // data dir ย้ายแล้ว (เช่น %ProgramData%\KPE\<instance>) แต่ไฟล์ไลน์ยังค้างที่ <app>/config/lines → เตือนดัง ๆ
+  //   ไม่ copy เอง: เครื่อง demo หลาย tenant ใช้โค้ดชุดเดียวกัน ถ้า copy จะเอาไลน์ของเครื่อง dev ไปโผล่ใน tenant
+  //   การยกไฟล์ไปเป็นงานของตัวติดตั้ง (install_windows.ps1 ขั้น 3b) — ตรงนี้แค่ทำให้ไม่เงียบ
+  _warnLegacyLines() {
+    try {
+      const legacy = path.join(__dirname, '..', '..', '..', 'config', 'lines');
+      if (path.resolve(legacy) === path.resolve(this.runtimeDir) || !fs.existsSync(legacy)) return;
+      const missing = fs.readdirSync(legacy).filter((f) => f.endsWith('.json') && !fs.existsSync(path.join(this.runtimeDir, f)));
+      if (missing.length) {
+        console.warn(`[lineRecorder] ⚠️ พบไฟล์ไลน์ ${missing.length} ไฟล์ที่ ${legacy} แต่ไม่มีใน ${this.runtimeDir} (${missing.join(', ')}) — `
+          + 'data dir ถูกย้ายแต่ยกไฟล์ไลน์ไปไม่ครบ ไลน์เหล่านี้จะไม่ถูกบันทึกจนกว่าจะคัดลอกไป');
+      }
+    } catch (_) { /* เตือนอย่างเดียว ไม่ให้ล้มตอนเริ่มระบบ */ }
   }
 
   // identity ต่อเครื่อง (stable · ไม่ sync) — owner กลับมา renew ได้ · role กำหนดว่าแข่ง lock ไหม
@@ -168,7 +189,15 @@ class LineRecorderManager {
         if (this._identity.role === 'viewer') {                  // viewer ไม่แข่ง lock + ปล่อยที่ถืออยู่ (ส่งมอบทันที)
           if (this.owned[line]) { try { await store.releaseLock(line, this._identity.id); } catch (_) {} }
           own = false;
-        } else { own = await store.claimLock(line, this._identity.id, this._identity.label); }
+        } else {
+          const before = (this.owned[line] === true || typeof store.getLock !== 'function') ? null
+            : await Promise.resolve().then(() => store.getLock(line)).catch(() => null);
+          own = await store.claimLock(line, this._identity.id, this._identity.label, this._lockTakeoverMs);
+          if (own && before && before.owner && before.owner !== this._identity.id) {
+            const ago = before.heartbeat_ms != null ? Math.round((Number(before.now_ms) - Number(before.heartbeat_ms)) / 60000) : '?';
+            console.warn(`[lineRecorder] ${line}: ยึดสิทธิ์บันทึกต่อจาก ${before.owner} (เงียบ ${ago} นาที)`);
+          }
+        }
       } catch (_) { own = false; }   // เข้า DB ไม่ได้ → ถือว่าไม่ owned (หยุดเขียน · split-brain safe)
       if (own && this.owned[line] === false) {   // เพิ่งได้เป็น owner → resume จาก state ล่าสุดใน DB
         try { const s = await store.loadRegister(line); if (s) this.tracker.state[line] = s; } catch (_) {}

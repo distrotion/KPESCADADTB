@@ -275,11 +275,13 @@ CREATE INDEX IF NOT EXISTS ${e}_tsx ON ${e}(ts);`;
   }
 
   // ── Recorder lease lock (HA · 1 owner/line) — เครื่องเดียวกัน (recorder+viewer share file) → ใช้ Date.now() ได้ (ไม่มี clock-skew) ──
-  async claimLock(line, owner, label) {
+  //   takeoverMs > 0 = owner เดิมเงียบเกินนี้ ยึดต่อได้ (0 = ไม่แย่ง · พฤติกรรมเดิม) — ดู sqlStore.claimLock
+  async claimLock(line, owner, label, takeoverMs = 0) {
     const t = this._t(line, 'lock'); const now = Date.now();
+    const staleBefore = Number(takeoverMs) > 0 ? now - Math.floor(Number(takeoverMs)) : -1;
     this.db.prepare(`INSERT INTO ${t} (line,owner,label,heartbeat_ms,updated_at) VALUES (?,?,?,?,?)
       ON CONFLICT(line) DO UPDATE SET owner=excluded.owner, label=excluded.label, heartbeat_ms=excluded.heartbeat_ms, updated_at=excluded.updated_at
-      WHERE ${t}.owner=excluded.owner OR ${t}.owner IS NULL`).run(line, owner, label, now, now);
+      WHERE ${t}.owner=excluded.owner OR ${t}.owner IS NULL OR ${t}.heartbeat_ms < ?`).run(line, owner, label, now, now, staleBefore);
     const r = this.db.prepare(`SELECT owner FROM ${t} WHERE line=?`).get(line);
     return !!(r && r.owner === owner);
   }
