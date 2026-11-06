@@ -134,6 +134,21 @@ function _summarize(cfg, params, stats, graph, enterTs, exitTs) {
   return { values, stats: out };
 }
 
+// เตาอบ: กันตัวที่ "ออกไปแล้วแต่ไม่มีเลขออก" ค้างในเตาตลอดไป (เดิมงานค้าง running และ monitor โชว์ jig ผี)
+const OVEN_DWELL_SAMPLES = 20;          // จำเวลาอบจริงล่าสุดกี่รอบ (ไว้หาเวลาอบปกติ)
+const OVEN_ZERO_EXIT_RATIO = 0.9;       // ช่องออกเป็น 0 + ตัวเก่าสุดอบมาแล้ว ≥ 90% ของปกติ = ตัวนั้นออก
+const OVEN_STALE_FACTOR = 3;            // อยู่เกิน 3 เท่าของเวลาอบปกติ = ข้อมูลค้าง
+const OVEN_STALE_FALLBACK_MS = 6 * 3600 * 1000;   // ยังไม่รู้เวลาอบปกติ → ค้างเกิน 6 ชม. (เท่าที่จอ TV ใช้ซ่อน)
+
+// เวลาอบปกติ (ms): timeSp ที่ตั้งไว้ในสถานี ก่อน · ไม่มีก็ใช้มัธยฐานของเวลาอบจริง (ต้องมี ≥ 3 รอบ) · ไม่รู้ = null
+function _ovenTypicalMs(ov, station) {
+  const sp = station && station.timeSp && Number(station.timeSp.value);
+  if (sp > 0) return sp * 1000;
+  const dw = ((ov && ov.dw) || []).filter((v) => v > 0).sort((a, b) => a - b);
+  if (dw.length < 3) return null;
+  return dw[Math.floor(dw.length / 2)] * 1000;
+}
+
 class CarrierTracker {
   constructor() { this.state = {}; }   // line → { occ:{pos:{carrier,params}}, jobs:{carrier:ctx}, runs:{"date|carrier":n} }
 
@@ -173,6 +188,7 @@ class CarrierTracker {
 
   // oven (เตาอบ) — เข้าที่ inTag · ออกที่ outTag (เลข carrier ตรง ๆ) · อบเป็นชุด (หลายชิ้น) · เวลาอบ = ออก−เข้า
   //   ov.c = content (carrier→{inTime,params}) · ov.li/ov.lo = ค่า in/out ล่าสุด (diff)
+  //   ov.dw = เวลาอบจริงล่าสุด (วินาที · หาเวลาอบปกติ) · ov.dropped = ตัวที่เอาออกเพราะออกไปแล้วแต่ไม่มีเลขออก (ดูย้อนหลังได้)
   _oven(st, p, pos, pset, cfg, now, events, mk, laneOf, lastBySet) {
     const stn = String(p.station);
     const ov = st.oven[stn] || (st.oven[stn] = { c: {}, li: null, lo: null, params: {} });
@@ -206,38 +222,61 @@ class CarrierTracker {
       }
       ov.li = inId;
     }
-    // ออก oven (outTag เปลี่ยนเป็นเลขใหม่) → STEP เวลาอบ + (ถ้า finish/บ่อสุดท้าย) EXIT
+    // ออกเตา 1 ตัว → STEP เวลาอบ + (ถ้า finish/บ่อสุดท้าย) EXIT
+    const exitOne = (cr, rec) => {
+      const ctx = this._findCtxByCarrier(st, cr);
+      if (ctx) {
+        const dwellS = (rec && rec.inTime != null) ? Math.round((now - rec.inTime) / 1000) : null;   // เวลาอบ (วินาที) · out ก่อน in = null (robust)
+        const rawParams = rec ? rec.params : _latch({}, p.params);
+        const summ = _summarize(cfg, rawParams, rec ? rec.stats : null, rec ? rec.graph : null, rec ? rec.inTime : null, now);   // สรุป last/avg + min/max ตาม track
+        const params = summ.values;
+        const hasStats = Object.keys(summ.stats).length > 0;
+        const stepEv = mk('STEP', cr, p, params, ctx);
+        stepEv.enterTs = rec ? rec.inTime : null; stepEv.exitTs = now; stepEv.dwell = dwellS;
+        if (hasStats) stepEv.stats = summ.stats;
+        const ser = rec ? _seriesOut(rec.graph, _graphKeys(cfg)) : null;   // minigraph ช่วงอบ
+        if (ser) stepEv.series = ser;
+        events.push(stepEv);
+        const isFinish = !!((cfg.stations || {})[stn] || {}).finish;
+        const isLast = pos === lastBySet[pset];
+        if (isFinish || isLast) {                    // oven ปลายไลน์ = ขาออก (done)
+          const ex = mk('EXIT', cr, p, params, ctx);
+          ex.enterTs = rec ? rec.inTime : null; ex.exitTs = now; ex.dwell = dwellS;
+          if (hasStats) ex.stats = summ.stats;
+          events.push(ex); ctx.exited = true;
+        }
+        ctx.lastExitTs = now; ctx.lastSeenTs = now; ctx.lastStation = p.station; ctx.lastParams = { ...params };
+        if (dwellS > 0) { ov.dw = (ov.dw || []).concat(dwellS).slice(-OVEN_DWELL_SAMPLES); }   // เรียนเวลาอบปกติ (กฎ 0/อายุ)
+      }
+      if (rec) delete ov.c[cr];
+    };
+    // ตัวที่รู้แน่ว่าออกไปแล้วแต่ไม่มีเลขออก → เอาออกจากเตาเฉย ๆ ไม่แต่ง STEP (ไม่รู้เวลาออกจริง)
+    //   ctx คงไว้ให้ sweepIdle ปิดงานตามปกติ (เดิมค้าง running ตลอดไปเพราะ "ยังอบอยู่")
+    const drop = (cr, reason) => {
+      delete ov.c[cr];
+      ov.dropped = (ov.dropped || []).concat({ carrier: String(cr), reason, at: now }).slice(-10);
+    };
+    const typicalMs = _ovenTypicalMs(ov, (cfg.stations || {})[stn]);   // null = ยังไม่รู้เวลาอบปกติ
+    const oldest = () => Object.keys(ov.c).sort((a, b) => ov.c[a].inTime - ov.c[b].inTime)[0];
+    // ออก oven (outTag เปลี่ยนเป็นเลขใหม่)
     if (valid(p.outId)) {
       const outId = Number(p.outId);
       if (outId !== 0 && outId !== ov.lo) {
         const rec = ov.c[outId];
-        const ctx = this._findCtxByCarrier(st, outId);
-        if (ctx) {
-          const dwellS = (rec && rec.inTime != null) ? Math.round((now - rec.inTime) / 1000) : null;   // เวลาอบ (วินาที) · out ก่อน in = null (robust)
-          const rawParams = rec ? rec.params : _latch({}, p.params);
-          const summ = _summarize(cfg, rawParams, rec ? rec.stats : null, rec ? rec.graph : null, rec ? rec.inTime : null, now);   // สรุป last/avg + min/max ตาม track
-          const params = summ.values;
-          const hasStats = Object.keys(summ.stats).length > 0;
-          const stepEv = mk('STEP', outId, p, params, ctx);
-          stepEv.enterTs = rec ? rec.inTime : null; stepEv.exitTs = now; stepEv.dwell = dwellS;
-          if (hasStats) stepEv.stats = summ.stats;
-          const ser = rec ? _seriesOut(rec.graph, _graphKeys(cfg)) : null;   // minigraph ช่วงอบ
-          if (ser) stepEv.series = ser;
-          events.push(stepEv);
-          const isFinish = !!((cfg.stations || {})[stn] || {}).finish;
-          const isLast = pos === lastBySet[pset];
-          if (isFinish || isLast) {                    // oven ปลายไลน์ = ขาออก (done)
-            const ex = mk('EXIT', outId, p, params, ctx);
-            ex.enterTs = rec ? rec.inTime : null; ex.exitTs = now; ex.dwell = dwellS;
-            if (hasStats) ex.stats = summ.stats;
-            events.push(ex); ctx.exited = true;
-          }
-          ctx.lastExitTs = now; ctx.lastSeenTs = now; ctx.lastStation = p.station; ctx.lastParams = { ...params };
-        }
-        if (rec) delete ov.c[outId];
+        // เตาเข้าก่อนออกก่อน: ตัวที่เข้าก่อน outId แต่ยังอยู่ = ออกไปแล้วโดย PLC ไม่เขียนเลข (เจอจริง PH 7719 · 2026-09-25)
+        if (rec) for (const cr of Object.keys(ov.c)) if (cr !== String(outId) && ov.c[cr].inTime < rec.inTime) drop(cr, 'fifo');
+        exitOne(outId, rec);
+      } else if (outId === 0 && ov.lo != null && ov.lo !== 0 && typicalMs) {
+        // PLC เขียน 0 แทนเลข jig ที่ช่องออก (เจอจริง PH 7335/8057 — เป็น 0 ตอนอบครบ 31-35 นาที) → ตัวเก่าสุดออก
+        //   ต้องอบมาแล้ว ≥ 90% ของเวลาปกติ — ช่องออกถูกล้างเป็น 0 กลางรอบได้ (เจอ 8487 อยู่มา 15 นาที) ไม่ใช่การออก
+        const cr = oldest();
+        if (cr && now - ov.c[cr].inTime >= OVEN_ZERO_EXIT_RATIO * typicalMs) exitOne(Number(cr), ov.c[cr]);
       }
       ov.lo = outId;
     }
+    // อยู่ในเตานานผิดปกติ = ข้อมูลค้าง (ออกไปตอนที่ไม่มีเลขออกให้เห็น) → ไม่ให้ค้างในเตาตลอดไป
+    const maxMs = typicalMs ? OVEN_STALE_FACTOR * typicalMs : OVEN_STALE_FALLBACK_MS;
+    for (const cr of Object.keys(ov.c)) if (now - ov.c[cr].inTime > maxMs) drop(cr, 'stale');
   }
 
   // ลงทะเบียนงานจาก "จุดเข้า/conveyor" (trigger) — เก็บ barcode ไว้เป็น "pending" (ยังไม่รู้ set/แถว)

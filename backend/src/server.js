@@ -17,6 +17,7 @@ const ChartStore      = require('./chartStore');
 const DatalogManager  = require('./datalogManager');
 const AuthManager     = require('./authManager');
 const csvUtil         = require('./csvUtil');
+const layoutRev       = require('./layoutRev');
 const { resolve: placeholderResolve } = require('./placeholderResolver');
 const AdmZip          = require('adm-zip');
 const portsCfg        = require('../../ports.js');
@@ -666,6 +667,12 @@ function _serialByIdMap() {
   return map;
 }
 
+// ── HID input: keyboard-type devices (USB instruments that type their reading) — for the hid_input device form
+app.get('/api/hid-devices', (_req, res) => {
+  try { res.json(require('./drivers/hidInputDriver').listKeyboards()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/serial-ports', async (req, res) => {
   try {
     const { SerialPort } = require('serialport');
@@ -1279,12 +1286,12 @@ app.put('/api/ports', (req, res) => {
 //   working  = <base>/layout/dashboard.json          ← designer auto-save / Save
 //   deployed = <base>/layout/dashboard.deployed.json ← เขียนเฉพาะตอนกด Deploy (publish)
 //   หน้า deploy (:9012) อ่าน "deployed" → edit/save ไม่กระทบ operator จนกว่าจะ Deploy
-// GET /api/layout → { ok, layout: <obj|null> }  (ฉบับ working — designer ใช้)
+// GET /api/layout → { ok, layout: <obj|null>, rev }  (ฉบับ working — designer ใช้)
+//   rev = revision ของไฟล์ (layoutRev.js) — ต้องส่งกลับใน header x-layout-rev ตอน PUT
 app.get('/api/layout', (req, res) => {
   try {
-    const fp = csvUtil.layoutFile('dashboard.json');
-    if (!fs.existsSync(fp)) return res.json({ ok: true, layout: null });
-    res.json({ ok: true, layout: JSON.parse(fs.readFileSync(fp, 'utf8')) });
+    const { text, rev } = layoutRev.readLayoutWithRev(csvUtil.layoutFile('dashboard.json'));
+    res.json({ ok: true, layout: text == null ? null : JSON.parse(text), rev });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 // GET /api/layout/deployed → { ok, layout, deployed }  (ฉบับ deployed — หน้า deploy ใช้)
@@ -1302,17 +1309,23 @@ app.get('/api/layout/deployed', (req, res) => {
     res.json({ ok: true, deployed: false, layout: null });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
-// PUT /api/layout  (body = layout JSON) → เขียน working (atomic) — ฉบับร่าง ไม่กระทบ deploy
-//   กันเขียนทับ: ถ้ามีคนถือ edit lock อยู่ ต้องส่ง header x-edit-lock ตรงกับ holder เท่านั้น
+// PUT /api/layout  (body = layout JSON) → เขียน working (atomic) — ฉบับร่าง ไม่กระทบ deploy → { ok, rev }
+//   กันเขียนทับ (layoutRev.checkLayoutPut): มีคนถือ edit lock → ต้องเป็น holder (header x-edit-lock)
+//   ไม่มีใครถือ → header x-layout-rev ต้องตรงกับไฟล์ปัจจุบัน (แท็บที่โหลด layout ไว้นานแล้วจะทับของใหม่ไม่ได้)
 app.put('/api/layout', (req, res) => {
   try {
-    if (editLock && req.headers['x-edit-lock'] !== editLock.id) {
-      return res.status(409).json({ ok: false, error: 'มีผู้แก้ไขคนอื่นถือสิทธิ์อยู่', holder: editLock });
-    }
+    const fp = csvUtil.layoutFile('dashboard.json');
+    const reject = layoutRev.checkLayoutPut({
+      editLock,
+      lockHeader: req.headers['x-edit-lock'],
+      baseRev: req.headers['x-layout-rev'],
+      currentRev: layoutRev.readLayoutWithRev(fp).rev,
+    });
+    if (reject) return res.status(reject.status).json(reject.body);
     const layout = req.body;
     if (!layout || typeof layout !== 'object') return res.status(400).json({ ok: false, error: 'invalid layout' });
-    csvUtil.writeJsonAtomic(csvUtil.layoutFile('dashboard.json'), layout);
-    res.json({ ok: true });
+    csvUtil.writeJsonAtomic(fp, layout);
+    res.json({ ok: true, rev: layoutRev.readLayoutWithRev(fp).rev });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 // POST /api/layout/widget-config → patch config ของ widget ตัวเดียวในไฟล์ layout (working และ/หรือ deployed)

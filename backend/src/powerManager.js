@@ -25,6 +25,7 @@ const CSV_FOLDER = 'power';          // history รายวัน (ปิดว
 const CSV_PREFIX = 'power';
 const DAILY_COLUMNS = ['date', 'meter_id', 'meter_name', 'kwh_total', 'kwh_peak', 'kwh_offpeak', 'cost', 'kw_max', 'by_period'];
 const POWER_DEVICE = 'POWER';        // managed virtual device — tag ต่อมิเตอร์ <id>_kw/_kwh/_cost (record/widget)
+const DROP_CONFIRM_TICKS = 3;        // kwh mode: a register lower than the last reading must repeat this many ticks to count as a reset
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 function clampInt(v, lo, hi, def) { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def; }
@@ -138,7 +139,9 @@ class PowerManager {
     if (bar < 0) return def;
     try {
       const v = this.tagEngine.getTagValue(ref.slice(0, bar), ref.slice(bar + 1));
-      const n = v ? num(v.value) : null;
+      // failed read = value null + quality bad · Number(null) is 0, which kwh mode took as a meter reset
+      if (!v || v.value === null || v.value === undefined || v.value === '' || v.quality === 'bad') return def;
+      const n = num(v.value);
       return n == null ? def : n;
     } catch (_) { return def; }
   }
@@ -180,6 +183,14 @@ class PowerManager {
     if (m.source === 'kwh') {
       const reg = c.reg;
       if (m.kwhBase == null) m.kwhBase = reg;                 // ตั้งฐานครั้งแรก
+      if (rt.lastReg != null && reg < rt.lastReg) {
+        // a lower reading is a meter reset only if it repeats — one odd reading used to rebase, then the next
+        // normal reading counted the whole register again as consumption
+        rt.dropCount = (rt.dropCount || 0) + 1;
+        if (rt.dropCount < DROP_CONFIRM_TICKS) { rt.ts = nowTs; this._rt.set(m.id, rt); return; }
+        rt.lastReg = null;                                     // confirmed reset → no kW across it
+      }
+      rt.dropCount = 0;
       if (reg < m.kwhBase) m.kwhBase = reg;                   // register reset/rollover → rebase
       rt.kwh = reg - m.kwhBase;                                // consumption สะสม
       rt.kw = (rt.lastReg != null && dtHr > 0) ? Math.max(0, (reg - rt.lastReg) / dtHr) : (rt.kw || 0);

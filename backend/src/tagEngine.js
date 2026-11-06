@@ -7,6 +7,7 @@ const OmronFinsDriver = require('./drivers/omronFinsDriver');
 const MqttDriver      = require('./drivers/mqttDriver');
 const OpcuaDriver     = require('./drivers/opcuaDriver');
 const SerialDriver    = require('./drivers/serialDriver');
+const HidInputDriver  = require('./drivers/hidInputDriver');
 const SerialBridgeDriver = require('./drivers/serialBridgeDriver');
 const KpenetworkDriver = require('./drivers/kpenetworkDriver');
 const GpioDriver      = require('./drivers/gpioDriver');
@@ -222,6 +223,14 @@ class TagEngine {
           if (this.onSerialRaw) { try { this.onSerialRaw(devId, raw); } catch (_) {} }
         });
         break;
+      case 'hid_input':
+        // USB instrument that types like a keyboard (evdev) — push-based, frames end on Enter
+        driver = new HidInputDriver(device, (devId, tagId, value) => {
+          this._setTagValue(devId, tagId, value, 'good');
+        }, (devId, raw) => {
+          if (this.onSerialRaw) { try { this.onSerialRaw(devId, raw); } catch (_) {} }
+        });
+        break;
       case 'serial_bridge':
         // RS232 MITM passthrough — 2 พอร์ต relay + capture · push-based
         driver = new SerialBridgeDriver(device, (devId, tagId, value) => {
@@ -259,7 +268,7 @@ class TagEngine {
     if (!device.autoProbe) driver.connect().catch(() => {});
 
     // Push-based drivers (mqtt, serial_port, serial_bridge, kpenetwork) don't need polling
-    if (device.type === 'mqtt' || device.type === 'serial_port' || device.type === 'serial_bridge' || device.type === 'kpenetwork') return;
+    if (device.type === 'mqtt' || device.type === 'serial_port' || device.type === 'serial_bridge' || device.type === 'kpenetwork' || device.type === 'hid_input') return;
 
     // ── READ SIDE pipeline ──────────────────────────────────────────────────
     //   tag set → device → data read → device → return tag set

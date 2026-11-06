@@ -1,6 +1,7 @@
 const ModbusRTU = require('modbus-serial');
 const codec     = require('./modbusCodec');   // §11.7 encode/decode กลาง (ใช้ร่วม KPENETWORK)
 const { decodeMultiBit } = require('./bitDecode');
+const Rs485Direction = require('./rs485Direction');
 
 /**
  * Modbus Driver — รองรับ 16 / 32 / 64-bit
@@ -25,14 +26,65 @@ class ModbusDriver {
     this.client = new ModbusRTU();
     this.connected = false;
     this.type = device.type;
+    this.direction = null;   // RS485 DE/RE line (modbus_rtu + connection.deGpio) — kept across reconnects
+  }
+
+  // connection.deGpio = BCM pin wired to DE+RE of a MAX485-style module · empty = module switches by itself
+  async _directionLine() {
+    const gpio = this.device.connection && this.device.connection.deGpio;
+    if (this.type !== 'modbus_rtu' || gpio === undefined || gpio === null || gpio === '') return null;
+    if (!this.direction) {
+      const line = new Rs485Direction(Number(gpio));
+      await line.open();
+      this.direction = line;
+    }
+    return this.direction;
+  }
+
+  // DE HIGH for each request, LOW once the last byte has left the UART (drain = tcdrain).
+  // pending counts overlapping writes so an early drain cannot drop DE under a later request.
+  _switchDirectionAroundWrites(client, line) {
+    const port = client._port && client._port._client;
+    if (!port || typeof port.write !== 'function' || typeof port.drain !== 'function') {
+      throw new Error('RS485 DE/RE: serial port not reachable');
+    }
+    const write = port.write.bind(port);
+    let pending = 0;
+    const receive = () => { try { line.set(false); } catch (_) {} };
+    port.write = (data, ...rest) => {
+      line.set(true);
+      pending++;
+      const accepted = write(data, ...rest);
+      port.drain(() => { if (--pending === 0 && this.client === client) receive(); });
+      return accepted;
+    };
+    port.on('close', () => { pending = 0; if (this.client === client) receive(); });
   }
 
   // ทิ้ง client แบบ abort ทันที — close() ส่ง FIN ซึ่งไม่ยกเลิก TCP connect ที่ค้างกลางทาง
   // (kernel SYN ต่ออีก ~1-2 นาที กลายเป็น ghost connection ไปกินช่อง connection ของ PLC)
   _kill(client) {
     if (!client) return;
+    // RTU: modbus-serial's destroy() silently skips a port without destroy() → serial port stayed open and locked
+    if (client._port && typeof client._port.destroy !== 'function') {
+      try { client.close(() => {}); } catch (_) {}
+      return;
+    }
     try { client.destroy(() => {}); }
-    catch (_) { try { client.close(() => {}); } catch (_) {} } // RTU/port ที่ไม่มี destroy
+    catch (_) { try { client.close(() => {}); } catch (_) {} }
+  }
+
+  // Before reopening: a serial path still held by the old client fails with "Cannot lock port" → wait for its close
+  _release(client) {
+    if (!client || !client._port || typeof client._port.destroy === 'function') {
+      this._kill(client);
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const done = () => { clearTimeout(timer); resolve(); };
+      const timer = setTimeout(done, 2000);
+      try { client.close(done); } catch (_) { done(); }
+    });
   }
 
   async connect() {
@@ -40,7 +92,9 @@ class ModbusDriver {
     this._connecting = true;
     try {
       // สร้าง client ใหม่ทุกครั้ง — เลี่ยง socket ค้างจากการเชื่อมต่อครั้งก่อน
-      this._kill(this.client);
+      await this._release(this.client);
+      const direction = await this._directionLine();
+      if (direction) direction.set(false);   // bus in receive before the port opens
       this.client = new ModbusRTU();
       const client = this.client; // identity — กัน listener ของ socket เก่ามาแตะสถานะรอบใหม่
       // ตั้งก่อน connect: ทุก transaction มี timer เสมอ (client ที่ race หลุดจะไม่มีทาง hang read)
@@ -63,12 +117,14 @@ class ModbusDriver {
         new Promise((_, rej) => setTimeout(() => rej(new Error('connect timeout')), 4000)),
       ]);
       client.setID(this.device.connection.unitId || 1);
+      if (direction) this._switchDirectionAroundWrites(client, direction);
       this.connected = true;
 
       // ตรวจหลุดทันทีผ่าน socket events (เหมือน MC) — ไม่ต้องรอ read timeout
       const sock = client._port && client._port._client;
       if (sock && typeof sock.on === 'function') {
-        sock.setKeepAlive(true, 3000); // ให้ OS probe หา peer ที่ตายแบบ abrupt เร็วขึ้น
+        // TCP only — RTU's serial port has no setKeepAlive (calling it failed every RTU connect)
+        if (typeof sock.setKeepAlive === 'function') sock.setKeepAlive(true, 3000); // ให้ OS probe หา peer ที่ตายแบบ abrupt เร็วขึ้น
         sock.on('close', () => { if (this.client === client) this.connected = false; });
         sock.on('error', () => { if (this.client === client) this.connected = false; });
       }
@@ -87,6 +143,17 @@ class ModbusDriver {
     return codec.wordCount(dataType);
   }
 
+  // One retry when a reply never came (RS485 turnaround / noise): a single lost reply used to mark the driver
+  // disconnected and fail every remaining tag of the poll cycle. A Modbus exception is a real answer — no retry.
+  async _retryOnce(request) {
+    try { return await request(); }
+    catch (err) {
+      const timedOut = err && err.modbusCode === undefined && /timed out/i.test(String(err.message));
+      if (!timedOut) throw err;
+      return request();
+    }
+  }
+
   async readTag(tag) {
     if (!this.connected) return null;
     try {
@@ -99,25 +166,25 @@ class ModbusDriver {
           if (dt === 'MULTI_BIT') {
             // อ่าน coil ต่อเนื่อง N ตัวครั้งเดียว → decimal (coil แรก = LSB)
             const n1 = Math.max(1, Math.min(parseInt(tag.bits) || 16, 32));
-            result = await this.client.readCoils(tag.address, n1);
+            result = await this._retryOnce(() => this.client.readCoils(tag.address, n1));
             return this._bitsToDec(result.data, n1, tag.bitMode);
           }
-          result = await this.client.readCoils(tag.address, 1);
+          result = await this._retryOnce(() => this.client.readCoils(tag.address, 1));
           return result.data[0] ? 1 : 0;
         case 2: // Discrete Inputs
           if (dt === 'MULTI_BIT') {
             const n2 = Math.max(1, Math.min(parseInt(tag.bits) || 16, 32));
-            result = await this.client.readDiscreteInputs(tag.address, n2);
+            result = await this._retryOnce(() => this.client.readDiscreteInputs(tag.address, n2));
             return this._bitsToDec(result.data, n2, tag.bitMode);
           }
-          result = await this.client.readDiscreteInputs(tag.address, 1);
+          result = await this._retryOnce(() => this.client.readDiscreteInputs(tag.address, 1));
           return result.data[0] ? 1 : 0;
         case 3: // Holding Registers
-          result = await this.client.readHoldingRegisters(tag.address, count);
+          result = await this._retryOnce(() => this.client.readHoldingRegisters(tag.address, count));
           if (dt === 'BIT') return (result.data[0] >> (tag.bit || 0)) & 1;
           return this._parse(result.data, dt, tag);
         case 4: // Input Registers
-          result = await this.client.readInputRegisters(tag.address, count);
+          result = await this._retryOnce(() => this.client.readInputRegisters(tag.address, count));
           if (dt === 'BIT') return (result.data[0] >> (tag.bit || 0)) & 1;
           return this._parse(result.data, dt, tag);
         default:
@@ -213,6 +280,7 @@ class ModbusDriver {
   disconnect() {
     this._kill(this.client);
     this.connected = false;
+    if (this.direction) { this.direction.close(); this.direction = null; }
   }
 }
 
