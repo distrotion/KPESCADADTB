@@ -28,6 +28,11 @@ const GPIO_DISK_TAGS = [
   { id: 'DISK_FREE',  name: 'Disk Free',  sysStat: 'disk_free'  },
 ];
 
+// fast read (setFastRead): a request never lasts longer / holds more tags than this · default "every"
+const FAST_READ_MAX_S = 600;
+const FAST_READ_MAX_TAGS = 24;
+const FAST_READ_EVERY = 8;
+
 class TagEngine {
   constructor(onTagUpdate, onDeviceStatus) {
     this.onTagUpdate = onTagUpdate;       // callback(deviceId, tagId, value, quality, ts)
@@ -39,6 +44,7 @@ class TagEngine {
     this.tagValues = new Map(); // tag set (buffer กลางที่ UI/script เห็น) — "deviceId:tagId" -> { value, quality, timestamp }
     this.simStore  = new Map(); // buffer data (หน่วยความจำจำลองของ device ตอน sim mode) — "deviceId:tagId" -> value
     this.intervals = new Map();
+    this.fastRead = new Map();  // deviceId -> { ids, until, every } - priority tags (setFastRead), runtime only, never saved
     this.alarms = [];
     this.lineRecorder = null;   // LR manager (wire จาก server.js) — device type 'lr' อ่าน job field ผ่านตัวนี้
     this._loadConfig();
@@ -299,11 +305,15 @@ class TagEngine {
           }
           await driver.connect().catch(() => {});
         }
+        let sinceFast = 0;
         for (const tag of device.tags) {
           if (tag.simulate) continue; // sim tag — buffer คือ "ความจริง" อยู่แล้ว ไม่อ่านจาก device
           const { value, quality } = await this._readSource(device, tag, driver);
           this._setTagValue(device.id, tag.id, value, quality); // → return tag set (buffer)
           if (quality === 'good') device._lastGoodRead = Date.now(); // online ตาม read สำเร็จ
+          // fast read: the priority tags again after every `every` normal reads, on the same connection
+          const fast = this._fastReadOf(device);
+          if (fast && ++sinceFast >= fast.every) { sinceFast = 0; await this._fastPass(device, driver); }
         }
       } finally { polling = false; }
     };
@@ -604,6 +614,61 @@ class TagEngine {
     // push-based (mqtt/serial) — ค่าล่าสุดถูก push เข้า buffer แล้ว
     const cur = this.tagValues.get(key);
     return cur ? { value: cur.value, quality: cur.quality } : { value: null, quality: 'unknown' };
+  }
+
+  // ── Fast read (priority tags) ────────────────────────────────────────────────
+  //   A polled device reads its tags one after another, so with hundreds of tags each one is seen only once per
+  //   long cycle (CENTER › Liquid: 460 tags ≈ 130 s). A caller that needs a few of them quickly for a short time
+  //   (a scan word while the operator stands at the station) asks here: after every `every` normal reads the poll
+  //   re-reads those tags on the same connection — still one request at a time, so the PLC gets no second
+  //   connection and no higher request rate; the rest of the cycle just takes longer while it lasts.
+  //   Runtime only (never saved) and it always ends by itself: seconds ≤ FAST_READ_MAX_S, tags ≤ FAST_READ_MAX_TAGS.
+  //   tags [] or seconds 0 = stop now.
+  setFastRead(deviceRef, tagRefs, seconds, every) {
+    const device = this._findDevice(deviceRef);
+    if (!device) throw new Error(`Device not found: ${deviceRef}`);
+    const sec = Math.min(Math.max(Number(seconds) || 0, 0), FAST_READ_MAX_S);
+    const ids = [];
+    for (const ref of Array.isArray(tagRefs) ? tagRefs : []) {
+      const tag = this._findTag(device, ref);
+      if (tag && !tag.simulate && !ids.includes(tag.id)) ids.push(tag.id);
+    }
+    if (!sec || !ids.length) { this.fastRead.delete(device.id); return this.getFastRead(device.id); }
+    if (ids.length > FAST_READ_MAX_TAGS) throw new Error(`fast read takes at most ${FAST_READ_MAX_TAGS} tags`);
+    const n = Math.trunc(Number(every));
+    this.fastRead.set(device.id, { ids, until: Date.now() + sec * 1000, every: n >= 1 ? Math.min(n, 100) : FAST_READ_EVERY });
+    return this.getFastRead(device.id);
+  }
+
+  getFastRead(deviceRef) {
+    const device = this._findDevice(deviceRef);
+    const f = device ? this._fastReadOf(device) : null;
+    return { deviceId: device ? device.id : `${deviceRef}`, active: !!f, tags: f ? f.ids.slice() : [], until: f ? f.until : 0, every: f ? f.every : 0 };
+  }
+
+  // the live request of a device, or null — an expired one is dropped here
+  _fastReadOf(device) {
+    const f = this.fastRead.get(device.id);
+    if (!f) return null;
+    if (Date.now() >= f.until) { this.fastRead.delete(device.id); return null; }
+    return f;
+  }
+
+  // one pass over the priority tags — each value goes to the buffer as it is read → number of tags read
+  async _fastPass(device, driver) {
+    const f = this._fastReadOf(device);
+    if (!f) return 0;
+    let n = 0;
+    for (const id of f.ids) {
+      const tag = device.tags.find((t) => t.id === id);
+      if (!tag || tag.simulate) continue;
+      const { value, quality } = await this._readSource(device, tag, driver);
+      if (this.drivers.get(device.id) !== driver) return n;   // the device was re-initialised meanwhile
+      this._setTagValue(device.id, tag.id, value, quality);
+      if (quality === 'good') device._lastGoodRead = Date.now();
+      n++;
+    }
+    return n;
   }
 
   // address + offset (คงตัวอักษรพื้นที่ เช่น D/W · บวกเฉพาะเลข) → null ถ้า parse ไม่ได้/ติดลบ

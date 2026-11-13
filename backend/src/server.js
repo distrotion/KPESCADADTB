@@ -2646,6 +2646,19 @@ app.delete('/api/devices/:deviceId/tags/:tagId', (req, res) => {
   } catch (e) { res.status(400).json({ success: false, error: e.message }); }
 });
 
+// Fast read — a few tags of a polled device re-read between the others for a short time (engine.setFastRead):
+//   POST { tags: [tagId…], seconds, every? } → { success, deviceId, active, tags, until, every } · tags [] / seconds 0 = stop
+//   runtime only, ends by itself (seconds ≤ 600) · same connection, no extra PLC load · GET = what runs now
+app.post('/api/devices/:deviceId/fast-read', (req, res) => {
+  try {
+    const { tags, seconds, every } = req.body || {};
+    res.json({ success: true, ...engine.setFastRead(req.params.deviceId, tags, seconds, every) });
+  } catch (e) { res.status(400).json({ success: false, error: e.message }); }
+});
+app.get('/api/devices/:deviceId/fast-read', (req, res) => {
+  res.json({ success: true, ...engine.getFastRead(req.params.deviceId) });
+});
+
 // PUT rename/delete tag group (atomic) — { from, to }  · to='' = ลบกลุ่ม (tag ลอย)
 app.put('/api/devices/:deviceId/tag-group', (req, res) => {
   try {
