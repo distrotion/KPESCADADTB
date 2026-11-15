@@ -1,4 +1,4 @@
-// KPE SCADA — ตัว resolve พอร์ตกลาง (ใช้ร่วม backend/serve.js/manager/deploy.js)
+// KPE MES — ตัว resolve พอร์ตกลาง (ใช้ร่วม backend/serve.js/manager/deploy.js)
 //   ลำดับความสำคัญ: env > ports.json (root) > default
 //   ไฟล์ ports.json อยู่ที่ root (ข้างไฟล์นี้) — resolve จาก __dirname จึง move-safe
 //   ⚠️ เปลี่ยนพอร์ตแล้วต้อง restart process ถึงมีผล (พอร์ต bind ตอน start)

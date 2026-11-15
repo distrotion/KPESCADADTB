@@ -1,4 +1,4 @@
-# KPE SCADA - Windows update (replace program - keep data/ports/secrets - restart)
+# KPE MES - Windows update (replace program - keep data/ports/secrets - restart)
 #   Same concept as update_pi.sh - accepts a deploy tarball (.tar.gz online) or offline bundle (.zip with vendor/)
 #
 #   Usage (Run as administrator):

@@ -1,4 +1,4 @@
-# ติดตั้ง KPE SCADA บน Windows
+# ติดตั้ง KPE MES บน Windows
 
 รันใต้ **Windows Service** (ผ่าน WinSW) → เปิดเองตอนบูต + ฟื้นเมื่อ crash · Manager คุม backend+frontend
 > ⚠️ ยังไม่ได้ทดสอบบน Windows จริง (เขียนจาก Mac · ต้อง validate/test บน Windows) · แผนเต็ม: [../../docs/INSTALL-WINDOWS.md](../../docs/INSTALL-WINDOWS.md)

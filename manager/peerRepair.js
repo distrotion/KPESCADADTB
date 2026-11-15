@@ -69,7 +69,7 @@ function createPeerRepair({ readConfig, now = Date.now, mono = monoMs, wanted = 
   let busy = false;
   let lastCfg = null;
   const bud = budget || createRestartBudget({ mono,
-    onGiveUp: (svc, n) => { log(`[peer-repair] ${svc}: ${n} automatic restarts in 24 h - not restarting again, people must look`); notify(`KPE SCADA — ${svc} repair gave up`, `${n} automatic restarts in 24 h already`); } });
+    onGiveUp: (svc, n) => { log(`[peer-repair] ${svc}: ${n} automatic restarts in 24 h - not restarting again, people must look`); notify(`KPE MES — ${svc} repair gave up`, `${n} automatic restarts in 24 h already`); } });
 
   const cfg = () => (lastCfg = normConfig(readConfig()));
   const note = (o) => { outcomes.push({ ...o, at: now() }); if (outcomes.length > 50) outcomes.shift(); return o; };
@@ -145,7 +145,7 @@ function createPeerRepair({ readConfig, now = Date.now, mono = monoMs, wanted = 
       const a = { svc, peers, result: r && r.ok === false ? 'restart-failed' : 'restarted', why: local.why };
       clearVotes(svc);                                              // a new incident needs new votes
       audit({ kind: 'action', svc, peers, result: a.result, why: local.why, detail: r && r.msg });
-      notify(`KPE SCADA — ${svc} restarted by peers`, `${peers.join(', ')} saw it down; here: ${local.why}`);
+      notify(`KPE MES — ${svc} restarted by peers`, `${peers.join(', ')} saw it down; here: ${local.why}`);
       return note(a);
     } finally { busy = false; }
   }

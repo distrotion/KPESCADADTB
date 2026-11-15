@@ -1,4 +1,4 @@
-// KPE SCADA — Deploy server (เว็บ run-mode ที่ deploy แล้ว)
+// KPE MES — Deploy server (เว็บ run-mode ที่ deploy แล้ว)
 //   • เสิร์ฟ Flutter Web (build/web เดียวกับ designer) แต่บอกให้แอปรัน "run-mode only" (/app-config.json)
 //   • proxy /api,/ws → backend ที่จับคู่ไว้ (deployBackendHost:deployBackendPort — ตั้งใน Setup)
 //   • ฟัง deploy port (default 9012)  ·  layout = live จาก backend ที่จับคู่
@@ -137,11 +137,11 @@ server.on('upgrade', (req, socket, head) => {
 // bind พอร์ตไม่ได้ (EADDRINUSE จากตัวเก่า/orphan) → exit ทันที ไม่ค้างเป็น zombie
 // (manager เห็น exit แล้วจัดการต่อ · designer poll จะ timeout แทนที่จะ false success)
 server.on('error', (e) => {
-  console.error(`KPE SCADA DEPLOY listen error on :${PORT} — ${e.code || e.message}`);
+  console.error(`KPE MES DEPLOY listen error on :${PORT} — ${e.code || e.message}`);
   process.exit(1);
 });
 
 server.listen(PORT, () => {
-  console.log(`KPE SCADA DEPLOY (run-mode) on ${IS_TLS ? 'https' : 'http'}://localhost:${PORT}  (boot ${BOOT})`);
+  console.log(`KPE MES DEPLOY (run-mode) on ${IS_TLS ? 'https' : 'http'}://localhost:${PORT}  (boot ${BOOT})`);
   console.log(`  paired backend: ${BACKEND_HOST}:${BACKEND_PORT}  (proxy /api,/ws)`);
 });

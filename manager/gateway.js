@@ -1,4 +1,4 @@
-// KPE SCADA — Remote HMI Gateway (R1 core) · ดู docs ออกแบบใน SESSION-HANDOFF (§ Remote Gateway)
+// KPE MES — Remote HMI Gateway (R1 core) · ดู docs ออกแบบใน SESSION-HANDOFF (§ Remote Gateway)
 //   serverA เปิด "พอร์ตต่อ site" → forward TCP ดิบ ไป serverB:frontendPort (public)
 //   raw TCP (net) = รองรับ HTTP + WS + TLS ทะลุ · ไม่ rewrite path · auth จัดการ end-to-end ที่ serverB
 //   อยู่ใน Manager (ไม่แยก service) · ไม่เพิ่ม native dep (ใช้ net ของ Node)

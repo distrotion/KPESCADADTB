@@ -1,4 +1,4 @@
-// KPE SCADA — frontend server (single public port)
+// KPE MES — frontend server (single public port)
 //   • เสิร์ฟ Flutter Web (static build/web)
 //   • reverse-proxy: /api/* และ WebSocket (/ws) → backend (ภายใน)  ·  /mgr/* → manager
 //   → เปิด "พอร์ตเดียว" ออกสู่โลกภายนอก, backend/manager อยู่ภายใน (127.0.0.1)
@@ -99,13 +99,13 @@ function frontLocked() { try { return !!(_license && _license.frontLocked()); } 
 function frontLockPage() {
   let mid = ''; try { mid = _license ? _license.machineIdShort() : ''; } catch (_) {}
   return '<!doctype html><html lang="th"><head><meta charset="utf-8">'
-    + '<meta name="viewport" content="width=device-width,initial-scale=1"><title>KPE SCADA</title></head>'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1"><title>KPE MES</title></head>'
     + '<body style="font:15px system-ui;color:#cbd5e1;background:#0f1a2e;margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh">'
     + '<div style="max-width:520px;text-align:center;padding:32px">'
     + '<div style="font-size:44px">🔒</div>'
     + '<h2 style="color:#e2e8f0;margin:12px 0">HMI disabled — backend-only license</h2>'
     + '<p>license ของเครื่องนี้เป็นแบบ <b>backend</b> — เปิด API/tag ได้ แต่หน้าจอ HMI ถูกล็อก</p>'
-    + '<p>ต้องใช้ license แบบ <b>base</b> (full SCADA) เพื่อเปิดหน้าจอ</p>'
+    + '<p>ต้องใช้ license แบบ <b>base</b> (full KPE MES) เพื่อเปิดหน้าจอ</p>'
     + '<p style="color:#64748b;font-size:13px">machine-id: ' + mid + '</p>'
     + '</div></body></html>';
 }
@@ -240,6 +240,6 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 server.listen(PUBLIC_PORT, () => {
-  console.log(`KPE SCADA on ${IS_TLS ? 'https' : 'http'}://localhost:${PUBLIC_PORT}`);
+  console.log(`KPE MES on ${IS_TLS ? 'https' : 'http'}://localhost:${PUBLIC_PORT}`);
   console.log(`  proxy: /api,/ws -> ${BACKEND_HOST}:${BACKEND_PORT}  ·  /mgr -> ${BACKEND_HOST}:${MANAGER_PORT}`);
 });

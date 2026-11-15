@@ -333,7 +333,7 @@ function watchdogTick(name, port, state) {
   svc._portWasOpen = false;
   pushLog(name, `── ⚠️ process ยังอยู่ แต่พอร์ต ${port} ปฏิเสธ connection ติดกัน ${DEAD_PORT_SECS}s (listener ตาย) → restart ──`);
   dumpChildLogs(name);   // เก็บหลักฐานลงไฟล์ก่อนฆ่า — log ของลูกอยู่ใน RAM ตายแล้วหายหมด
-  notify(`KPE SCADA — ${svc.label} ไม่ตอบ`, `พอร์ต ${port} ตายทั้งที่ process ยังอยู่ → restart ให้แล้ว`);
+  notify(`KPE MES — ${svc.label} ไม่ตอบ`, `พอร์ต ${port} ตายทั้งที่ process ยังอยู่ → restart ให้แล้ว`);
   restartBudget.record(name, 'watchdog');   // B6 never waits for the budget (its own crash-loop guard stops a loop); it only tells the others
   svc._killedBy = 'watchdog';
   killChild(svc.proc);
@@ -374,7 +374,7 @@ async function healthProbe(name) {
 const restartBudget = createRestartBudget({
   onGiveUp: (svc, n) => {
     console.error(`[manager] ${svc}: ${n} automatic restarts in 24 h - automatic hang/peer restarts stop here, people must look`);
-    notify(`KPE SCADA — ${svc} restarted ${n}× in 24 h`, 'automatic restarts paused · check the logs');
+    notify(`KPE MES — ${svc} restarted ${n}× in 24 h`, 'automatic restarts paused · check the logs');
   },
 });
 // kill a tracked child for good: SIGTERM, then SIGKILL if it has not exited after 3 s
@@ -408,7 +408,7 @@ async function healthRound() {
     svc._killedBy = 'hang-detector';                                    // the respawn after this exit is part of the same restart
     pushLog(name, `── ⚠️ ${svc.label} gave no HTTP answer for ${HUNG_SECS}s (hung, process still alive: ${healthTracker.view(name).last}) → restart ──`);
     dumpChildLogs(name);
-    notify(`KPE SCADA — ${svc.label} hung`, `no HTTP answer for ${HUNG_SECS}s → restarted`);
+    notify(`KPE MES — ${svc.label} hung`, `no HTTP answer for ${HUNG_SECS}s → restarted`);
     healthTracker.spawned(name);                                        // count again from here
     killChild(svc.proc);                                                // exit handler → scheduleRespawn (wantRunning stays true)
   }
@@ -437,7 +437,7 @@ function scheduleRespawn(name) {
     svc.wantRunning = false;
     svc.gaveUpAt = Date.now();   // kpelink repair: peers must not restart what the crash-loop guard gave up on (even with adoptOrphans)
     pushLog(name, `── ⚠️ crash-loop (ตาย ${svc._restartTimes.length} ครั้งใน ${RESPAWN_WINDOW_MS / 1000}s) → หยุด auto-restart · กด Start เพื่อลองใหม่ ──`);
-    notify(`KPE SCADA — ${svc.label} crash-loop`, 'หยุด auto-restart แล้ว · กด Start เพื่อลองใหม่');
+    notify(`KPE MES — ${svc.label} crash-loop`, 'หยุด auto-restart แล้ว · กด Start เพื่อลองใหม่');
     return;
   }
   const delay = Math.min(svc._restartTimes.length * 1000, 5000);   // backoff 1→5s
@@ -507,14 +507,14 @@ async function startService(name, opts = {}) {
     svc.proc = null;
     pushLog(name, `── Process exited (code ${code ?? 0}) ──`);
     bus.emit('proc', { name, running: false });
-    notify(`KPE SCADA — ${svc.label} stopped`, `Exit code: ${code ?? 0}`);
+    notify(`KPE MES — ${svc.label} stopped`, `Exit code: ${code ?? 0}`);
     if (svc.wantRunning && !_mgrShuttingDown) {
       dumpChildLogs(name);     // (B6) ตายไม่ตั้งใจ → เก็บ log ท้าย ๆ ลงไฟล์ไว้สืบสาเหตุ ก่อนที่ start ใหม่จะล้าง svc.logs
       scheduleRespawn(name);   // (B1) แล้วปลุกใหม่
     }
   });
 
-  notify(`KPE SCADA — ${svc.label} started`, `Port ${svc.port}`);
+  notify(`KPE MES — ${svc.label} started`, `Port ${svc.port}`);
   bus.emit('proc', { name, running: true });
   return { ok: true };
 }
@@ -797,7 +797,7 @@ app.use('/api', (req, res, next) => {
 
 // ── Branding ของ Manager เอง (ชื่อ + โลโก้) — manager/branding.json (อิสระจาก backend) ──
 const MGR_BRANDING_FIT = ['contain', 'cover', 'fill', 'scaleDown'];
-const MGR_BRANDING_DEFAULT = { appName: 'KPE SCADA Manager', logo: '', logoFit: 'contain' };
+const MGR_BRANDING_DEFAULT = { appName: 'KPE MES Manager', logo: '', logoFit: 'contain' };
 function readMgrBranding() {
   const r = mgrReadCfg('branding.json');
   return r ? { ...MGR_BRANDING_DEFAULT, ...r } : { ...MGR_BRANDING_DEFAULT };
@@ -1299,7 +1299,7 @@ app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 const MGR_PORT = PORTS.manager;
 server.listen(MGR_PORT, () => {
-  console.log(`KPE SCADA Manager → http://localhost:${MGR_PORT}  (${process.platform})`);
+  console.log(`KPE MES Manager → http://localhost:${MGR_PORT}  (${process.platform})`);
   console.log(`Public UI (frontend) → http://localhost:${PORTS.frontend}  ·  backend(internal) ${BACKEND_HOST}:${PORTS.backend}`);
   if (!blockedNow()) { try { gateway.start(); } catch (e) { console.error('[gateway] start:', e && e.message); } }   // R1: เปิด tunnel ตาม remote-sites.json (blocked → ไม่เปิด · ฟีเจอร์ gateway ต้องมี license)
   else console.error('[LICENSE] gateway not started — Manager gated');

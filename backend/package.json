@@ -1,7 +1,7 @@
 {
   "name": "kpe-scada-backend",
   "version": "1.0.0",
-  "description": "KPE SCADA Backend - Multi-protocol data acquisition server",
+  "description": "KPE MES Backend - Multi-protocol data acquisition server",
   "main": "src/server.js",
   "engines": {
     "node": ">=18.0.0"

@@ -1,4 +1,4 @@
-# KPE SCADA — เปิดใช้งาน License (สำหรับลูกค้า)
+# KPE MES — เปิดใช้งาน License (สำหรับลูกค้า)
 
 > เครื่องที่ติดตั้งแบบ "บังคับ license" (Windows service / Raspberry Pi) ต้อง **เปิดใช้งาน license ก่อนถึงจะรันได้**
 > ผู้ขาย (vendor) จะส่งไฟล์ license มาให้ทาง **USB** — ทำตามขั้นตอนข้างล่าง

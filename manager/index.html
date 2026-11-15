@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>KPE SCADA Manager</title>
+<title>KPE MES Manager</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -132,7 +132,7 @@ button:disabled{opacity:.35;cursor:default}
 <header>
   <div class="logo">
     <div class="logo-icon" id="mgr-logo-icon">⚡</div>
-    <span class="logo-text" id="mgr-logo-text">KPE SCADA Manager</span>
+    <span class="logo-text" id="mgr-logo-text">KPE MES Manager</span>
     <span class="mgr-version" id="mgr-version" title="เวอร์ชันแอป (stamp อัตโนมัติทุก commit)"></span>
     <button id="brand-edit-btn" onclick="toggleBrandEdit()" title="แก้ชื่อ/โลโก้ Manager"
       style="margin-left:8px;background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px">✏️</button>
@@ -150,7 +150,7 @@ button:disabled{opacity:.35;cursor:default}
   <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
     <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)">
       ชื่อ
-      <input id="brand-name" type="text" placeholder="KPE SCADA Manager"
+      <input id="brand-name" type="text" placeholder="KPE MES Manager"
         style="width:240px;padding:8px 10px;background:#111827;border:1px solid var(--border);border-radius:6px;color:#fff;font-size:13px">
     </label>
     <div style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)">
@@ -926,7 +926,7 @@ let BRAND_LOGO = '';   // data URL ที่กำลังแก้
 let BRAND_FIT = 'contain';
 function cssFit(f) { return f === 'scaleDown' ? 'scale-down' : (f || 'contain'); }
 function applyBranding(b) {
-  const name = (b && b.appName) || 'KPE SCADA Manager';
+  const name = (b && b.appName) || 'KPE MES Manager';
   const logo = (b && b.logo) || '';
   const fit = (b && b.logoFit) || 'contain';
   document.getElementById('mgr-logo-text').textContent = name;

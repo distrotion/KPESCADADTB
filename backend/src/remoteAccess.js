@@ -1,4 +1,4 @@
-// KPE SCADA — Remote access consent (R2) · ฝั่ง serverB ยินยอมให้ gateway (serverA) เข้าถึงไหม
+// KPE MES — Remote access consent (R2) · ฝั่ง serverB ยินยอมให้ gateway (serverA) เข้าถึงไหม
 //   serve.js (frontend public port) เรียก decide(clientIp) ก่อนรับ connection
 //   gateway forward TCP ดิบ → serverB เห็น source IP = ของ serverA (gateway) → ใช้ allowlist + toggle คุม
 //   หลักการ consent: ระบุ IP ของ gateway ที่ยอมรับ (allowGatewayIps) + toggle เปิด/ปิด

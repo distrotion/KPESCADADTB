@@ -1,4 +1,4 @@
-# KPE SCADA — Installer (แยกตาม OS)
+# KPE MES — Installer (แยกตาม OS)
 
 โฟลเดอร์เก็บไฟล์ติดตั้งของแต่ละ OS · แผน/รายละเอียดอยู่ใน `docs/`
 

@@ -1,4 +1,4 @@
-# KPE SCADA - License (Windows) - machine-id / activate / remove / status
+# KPE MES - License (Windows) - machine-id / activate / remove / status
 #   Equivalent to install_pi.sh --show-id / --activate (see docs/LICENSING-WINDOWS.md)
 #
 #   Usage (PowerShell; -Activate/-Remove need Administrator):

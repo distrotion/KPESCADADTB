@@ -1416,7 +1416,7 @@ app.post('/api/editlock/release', (req, res) => {
 // ── Branding (ชื่อแอป + โลโก้) — frontend + deploy ใช้ร่วมกัน · <base>/config/branding.json ──
 //   logo = data URL (base64) หรือ '' (ไม่มี) · ตั้งในหน้า Setup (frontend) · deploy อ่านผ่าน proxy เดียวกัน
 const BRANDING_FIT = ['contain', 'cover', 'fill', 'scaleDown'];   // วิธี fit โลโก้ในกรอบ
-const BRANDING_DEFAULT = { appName: 'KPE SCADA', logo: '', logoFit: 'contain' };
+const BRANDING_DEFAULT = { appName: 'KPE MES', logo: '', logoFit: 'contain' };
 function readBranding() {
   try {
     const fp = csvUtil.configFile('branding.json');
@@ -2677,9 +2677,9 @@ let _buildRunning = false;
 // ── Deploy bundle helpers (start scripts + readme) ─────────────────────────────
 function _deployStartSh() {
   return `#!/bin/bash
-# KPE SCADA — start ทั้งระบบ (backend + frontend)
+# KPE MES — start ทั้งระบบ (backend + frontend)
 cd "$(dirname "$0")"
-echo "KPE SCADA — starting..."
+echo "KPE MES — starting..."
 
 cd backend
 if [ ! -d node_modules ]; then echo "[first run] installing backend dependencies..."; npm install; fi
@@ -2701,17 +2701,17 @@ wait
 
 function _deployStartBat() {
   return `@echo off
-title KPE SCADA
+title KPE MES
 cd /d "%~dp0"
-echo KPE SCADA - starting...
+echo KPE MES - starting...
 
 cd backend
 if not exist node_modules ( echo [first run] installing backend dependencies... && call npm install )
-start "KPE SCADA Backend" cmd /k "node src/server.js"
+start "KPE MES Backend" cmd /k "node src/server.js"
 cd ..
 
 cd frontend
-start "KPE SCADA Frontend" cmd /k "node serve.js"
+start "KPE MES Frontend" cmd /k "node serve.js"
 cd ..
 
 timeout /t 3 /nobreak >nul
@@ -2722,7 +2722,7 @@ pause
 }
 
 function _deployReadme(wsUrl) {
-  return `KPE SCADA — Deployment Bundle
+  return `KPE MES — Deployment Bundle
 ==============================
 
 โครงสร้าง:
@@ -2910,7 +2910,7 @@ function startServicesOnce() {
   }, 30000).unref();
   server.listen(PORT, HOST, () => {
     _listening = true;
-    console.log(`KPE SCADA Backend running on ${HOST}:${PORT}`);
+    console.log(`KPE MES Backend running on ${HOST}:${PORT}`);
     console.log(`WebSocket: ws://${HOST}:${PORT}`);
     console.log(`REST API:  http://${HOST}:${PORT}/api`);
     try { activityLog.startAutoPrune(); } catch (_) {}   // retention: ลบ activity log เก่าอัตโนมัติ (ทำงานแม้ gated)

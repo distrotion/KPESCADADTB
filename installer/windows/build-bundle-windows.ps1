@@ -1,4 +1,4 @@
-# KPE SCADA - build the OFFLINE BUNDLE for Windows (node_modules + Node included) -> .zip
+# KPE MES - build the OFFLINE BUNDLE for Windows (node_modules + Node included) -> .zip
 #   Same concept as build-bundle.sh (Pi). WARNING: must run on Windows x64 (serialport is a win32 native dep) -
 #   cannot build on Mac/Linux. Use any Windows machine with internet, build once.
 #

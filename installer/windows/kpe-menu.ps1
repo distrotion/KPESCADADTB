@@ -1,4 +1,4 @@
-# KPE SCADA - Install / License menu (Windows)
+# KPE MES - Install / License menu (Windows)
 #   Double-click KPE-Setup-Windows.bat, or:
 #     powershell -ExecutionPolicy Bypass -File installer\windows\kpe-menu.ps1
 #   Wraps install_windows.ps1 + license_windows.ps1 in one menu (no flags to remember).
@@ -27,7 +27,7 @@ while ($run) {
   Clear-Host
   Write-Host ''
   Write-Host '  ============================================='
-  Write-Host '    KPE SCADA - Install / License (Windows)'
+  Write-Host '    KPE MES - Install / License (Windows)'
   Write-Host '  ============================================='
   Write-Host ''
   Write-Host '   -- Install --'

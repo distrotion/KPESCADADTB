@@ -32821,7 +32821,7 @@ _.K$=0
 _.L$=e
 _.aS$=_.aT$=0},
 xr:function xr(a){var _=this
-_.a="KPE SCADA"
+_.a="KPE MES"
 _.b=""
 _.c="contain"
 _.K$=0
@@ -129024,7 +129024,7 @@ return s},
 $S:696}
 A.a4D.prototype={
 E(a){var s=null,r=$.c8A(),q=A.cdj(s,s,s,s,B.zN,s,s,s,s,s,s,s,new A.cy(A.y(8),B.E),460)
-return new A.Nn(r,B.bhU,new A.aBx(),"KPE SCADA",A.GB(B.cq,A.c9s(B.cq,s,s,B.u,B.bh),B.aoa,B.bh,q,s),!1,s)}}
+return new A.Nn(r,B.bhU,new A.aBx(),"KPE MES",A.GB(B.cq,A.c9s(B.cq,s,s,B.u,B.bh),B.aoa,B.bh,q,s),!1,s)}}
 A.aBx.prototype={
 $2(a,b){var s=null,r=A.a([],t.p)
 if(b!=null)r.push(b)
@@ -129505,17 +129505,17 @@ if(q==null)q=0
 o=r
 return new A.tp(o,q)}catch(p){return new A.tp(n,0)}},
 aC5(a,b){return this.a7T(a,b,null)},
-a7S(){var s,r,q,p,o=this,n="KPE SCADA",m=o.aC5("GET","/api/branding").a
-if(m!=null){s=J.l(m)
-r=A.o(s.h(m,"appName"))
-o.a=(r==null?null:B.d.u(r).length!==0)===!0?A.ar(s.h(m,"appName")):n
-q=A.o(s.h(m,"logo"))
+a7S(){var s,r,q,p,o=this,n=o.aC5("GET","/api/branding").a
+if(n!=null){s=J.l(n)
+r=A.o(s.h(n,"appName"))
+o.a=(r==null?null:B.d.u(r).length!==0)===!0?A.ar(s.h(n,"appName")):"KPE MES"
+q=A.o(s.h(n,"logo"))
 o.b=q==null?"":q
-s=A.o(s.h(m,"logoFit"))
+s=A.o(s.h(n,"logoFit"))
 o.c=s==null?"contain":s}s=document
 s.toString
 r=o.a
-s.title=r.length===0?n:r
+s.title=r.length===0?"KPE MES":r
 if(o.b.length!==0){p=t.W1.a(s.querySelector("link[rel~='icon']"))
 if(p==null){p=s.createElement("link")
 p.rel="icon"
@@ -148053,7 +148053,7 @@ q.b2(A.c8(r,r,r,b?B.dG:B.b6,r,B.q,r,s,r,B.eh,r,r,r,r,r,r,r,r,r,r))},
 E(a){var s,r,q,p,o,n,m=this,l=null
 m.aI8(A.aj(a,!0,t.Gb))
 s=m.aFv(m.e)
-r=A.aW(l,B.G,!1,l,!0,B.q,l,A.aX(),m.d,l,l,l,l,l,2,A.bJ(l,l,l,B.cf,l,l,l,l,!0,new A.aM(4,A.y(6),B.Z),l,l,l,l,l,B.w,!0,l,l,l,l,new A.aM(4,A.y(6),B.bE),l,l,l,l,l,l,l,l,B.h5,"KPE SCADA",l,l,l,l,l,!0,l,l,l,!0,!0,!1,l,l,l,l,l,l,l,l,l,l,l,l,l,l),B.o,!0,l,!0,l,!1,l,B.L,l,l,l,l,l,l,l,l,l,1,l,l,!1,"\u2022",l,l,l,l,l,!1,l,l,!1,l,!0,l,B.J,l,l,l,l,l,l,l,l,l,l,l,B.aa,!0,B.H,l,B.N,l,l,l,l)
+r=A.aW(l,B.G,!1,l,!0,B.q,l,A.aX(),m.d,l,l,l,l,l,2,A.bJ(l,l,l,B.cf,l,l,l,l,!0,new A.aM(4,A.y(6),B.Z),l,l,l,l,l,B.w,!0,l,l,l,l,new A.aM(4,A.y(6),B.bE),l,l,l,l,l,l,l,l,B.h5,"KPE MES",l,l,l,l,l,!0,l,l,l,!0,!0,!1,l,l,l,l,l,l,l,l,l,l,l,l,l,l),B.o,!0,l,!0,l,!1,l,B.L,l,l,l,l,l,l,l,l,l,1,l,l,!1,"\u2022",l,l,l,l,l,!1,l,l,!1,l,!0,l,B.J,l,l,l,l,l,l,l,l,l,l,l,B.aa,!0,B.H,l,B.N,l,l,l,l)
 q=A.y(6)
 p=A.ak(B.a_,1)
 o=s!=null?A.kt(A.y(6),A.caS(s,A.ch_(m.f),!0,l,l),B.c3):B.ak4
@@ -157893,7 +157893,7 @@ E(a){var s,r,q=null,p=A.aj(a,!0,t.Gb),o=p.gbdW(),n=this.c
 if(o!=null)s=A.kt(A.y(6),A.caS(o,A.ch_(p.c),!0,n,n),B.c3)
 else{s=A.y(6)
 s=A.z(q,A.aB(B.j6,B.l,q,q,n*0.64),B.j,q,q,new A.P(B.ab,q,q,s,q,q,B.m),q,n,q,q,q,q,q,n)}r=p.a
-if(r.length===0)r="KPE SCADA"
+if(r.length===0)r="KPE MES"
 return A.k(A.a([s,new A.x(n*0.36,q,q,q),A.e(r,q,q,q,q,q,A.B(q,q,B.u,q,q,q,q,q,q,q,q,this.d,q,q,B.aU,q,q,!0,q,q,q,q,q,q,q,q),q,q,q)],t.p),B.i,B.c,B.y,0,q,q)}}
 A.Kf.prototype={
 E(a){var s,r,q,p,o,n=null,m=A.aj(a,!0,t.X),l=this.c

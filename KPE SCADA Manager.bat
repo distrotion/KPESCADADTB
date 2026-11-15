@@ -1,5 +1,5 @@
 @echo off
-title KPE SCADA Manager
+title KPE MES Manager
 :: Manual single-instance start (default ports). For Windows Service / multi-instance
 :: use "KPE Service Manager.bat" instead (controls the service by name, no port guessing).
 sc query state= all 2>nul | findstr /B /C:"SERVICE_NAME:" | findstr /I "kpe-scada" >nul 2>&1
@@ -11,6 +11,6 @@ if not errorlevel 1 (
   pause
 )
 cd /d "%~dp0manager"
-echo Starting KPE SCADA Manager...
+echo Starting KPE MES Manager...
 node server.js
 pause

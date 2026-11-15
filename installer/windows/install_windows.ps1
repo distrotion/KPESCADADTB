@@ -1,4 +1,4 @@
-# KPE SCADA - Windows installer (Windows Service via WinSW - auto-start on boot + restart on crash)
+# KPE MES - Windows installer (Windows Service via WinSW - auto-start on boot + restart on crash)
 #   Plan: docs/INSTALL-WINDOWS.md - same concept as the Pi installer (install/update/offline/watchdog/uninstall)
 #
 #   Usage (right-click install_windows.bat > Run as administrator, or):
@@ -187,8 +187,8 @@ $nodeDir = Split-Path -Parent $node
 $xml = @"
 <service>
   <id>$Svc</id>
-  <name>KPE SCADA Manager</name>
-  <description>KPE SCADA - supervises backend + frontend</description>
+  <name>KPE MES Manager</name>
+  <description>KPE MES - supervises backend + frontend</description>
   <executable>$node</executable>
   <arguments>server.js</arguments>
   <workingdirectory>$Root\manager</workingdirectory>
@@ -232,7 +232,7 @@ if ($Watchdog) {
 
 # -- 6) done ---------------------------------------------------------------------
 Write-Host ""
-Write-Host "KPE SCADA is running (Windows Service: $Svc - Automatic + restart)" -ForegroundColor Green
+Write-Host "KPE MES is running (Windows Service: $Svc - Automatic + restart)" -ForegroundColor Green
 if ($Instance) { Write-Host "   Instance  : $Instance  (data: $DataDir - kpenetwork modbus: $pKpenet)" }
 Write-Host "   Dashboard : http://localhost:$($a[0])"
 Write-Host "   Manager   : http://localhost:$($a[1])"

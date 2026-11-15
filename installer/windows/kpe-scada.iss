@@ -1,4 +1,4 @@
-; KPE SCADA - Inno Setup script (สร้าง setup.exe สำหรับ Windows)
+; KPE MES - Inno Setup script (สร้าง setup.exe สำหรับ Windows)
 ; ⚠️ compile บน Windows ด้วย Inno Setup (ISCC.exe) — Mac/Linux compile ไม่ได้
 ;   ก่อน compile: ที่ frontend รัน `flutter build web --no-web-resources-cdn` (ต้องมี build/web)
 ;   compile: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" kpe-scada.iss  -> Output\kpe-scada-setup.exe
@@ -9,11 +9,13 @@
 #define AppVer "1.0.0"
 
 [Setup]
-AppName=KPE SCADA
+; AppId stays the old name: it is the install identity (upgrade / uninstall of existing setups)
+AppId=KPE SCADA
+AppName=KPE MES
 AppVersion={#AppVer}
 AppPublisher=KPE
 DefaultDirName={autopf}\KPE SCADA
-DefaultGroupName=KPE SCADA
+DefaultGroupName=KPE MES
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64compatible

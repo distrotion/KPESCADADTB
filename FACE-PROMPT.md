@@ -7,7 +7,7 @@
 ---
 
 ```
-งาน: ต่อกล้องจำหน้า (TPK-VISION-FACE) เข้า KPE SCADA — ส่งค่า "นี่คือใคร" + เปิดกล้องดูใน dashboard
+งาน: ต่อกล้องจำหน้า (TPK-VISION-FACE) เข้า KPE MES — ส่งค่า "นี่คือใคร" + เปิดกล้องดูใน dashboard
 
 ## บริบท
 มีแอป TPK-VISION-FACE (Python) เสร็จแล้ว รันบน Raspberry Pi 5 (4GB) + USB webcam ที่ประตู

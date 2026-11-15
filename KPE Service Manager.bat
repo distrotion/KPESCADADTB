@@ -1,8 +1,8 @@
 @echo off
 setlocal enabledelayedexpansion
-title KPE SCADA - Service Manager
+title KPE MES - Service Manager
 :: ----------------------------------------------------------------------------
-:: KPE SCADA - Service Manager  (multi-instance safe)
+:: KPE MES - Service Manager  (multi-instance safe)
 ::   Lists every installed "kpe-scada*" Windows service and lets you
 ::   restart / stop / start the one you pick, plus open its Manager in a browser.
 ::   It controls the SERVICE by name -- it does NOT guess a port -- so it works
@@ -25,7 +25,7 @@ if errorlevel 1 (
 :menu
 cls
 echo ===============================================================
-echo   KPE SCADA - Service Manager
+echo   KPE MES - Service Manager
 echo ===============================================================
 echo.
 set "n=0"

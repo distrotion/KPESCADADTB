@@ -1,4 +1,4 @@
-// KPE SCADA — Self-update: verify library (U1 · ฝั่งผู้รับ B) · ดู docs/SELF-UPDATE-PLAN.md
+// KPE MES — Self-update: verify library (U1 · ฝั่งผู้รับ B) · ดู docs/SELF-UPDATE-PLAN.md
 //   หน้าที่ U1: ตรวจ bundle เท่านั้น (ลายเซ็น Ed25519 · hash ไฟล์ · version monotonic · platform) — ยังไม่ติดตั้ง
 //   reuse: canonical JSON + Ed25519 (Node crypto) แบบเดียวกับ licenseManager (verify offline 100% · ไม่เพิ่ม native dep)
 //   ⛔ กติกาเหล็ก: ไม่มีทาง "ยอมรับ bundle ไม่เซ็น" — ไม่มี pubkey = reject (armed) · pubkey ฝัง = pubkey เดียวกับ license

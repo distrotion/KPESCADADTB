@@ -1,4 +1,4 @@
-# KPE SCADA — git attributes
+# KPE MES — git attributes
 # กัน line-ending พังเวลา push/pull ข้าม OS (โดยเฉพาะ .sh ที่ต้องเป็น LF ไม่งั้นรันบน Pi/Linux พัง)
 
 * text=auto

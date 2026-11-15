@@ -1,4 +1,4 @@
-// KPE SCADA — Licensing / anti-clone (Pi-only · USB activation) · Phase A core
+// KPE MES — Licensing / anti-clone (Pi-only · USB activation) · Phase A core
 //   ดู docs/LICENSING.md · verify ในเครื่อง 100% (offline · Ed25519 = Node crypto built-in · ไม่เพิ่ม native dep)
 //   หลักการ: บังคับบน Pi เสมอ · Windows/Linux ที่เป็น "armed build" (ฝัง pubkey) = บังคับโดย default (dev ปิดด้วย KPE_DEV=1) · Mac = dev ไม่บังคับ
 //     ผูก Pi serial → clone SD ไป Pi อื่น = serial ใหม่ = fp ไม่ตรง = ไม่ผ่าน

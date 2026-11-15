@@ -1,4 +1,4 @@
-# KPE SCADA
+# KPE MES
 
 ระบบ SCADA — Node.js backend + Flutter Web frontend + Manager (ตัวคุม service)
 รองรับ device: Modbus TCP/RTU · Serial · MQTT · OPC-UA · MC Protocol · Omron FINS · KPENETWORK · **GPIO (Raspberry Pi)**
